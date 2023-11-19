@@ -165,8 +165,10 @@ def train_step(model, dataloader, loss_fn, optimizer, device):
     for batch_idx, (d0, v0, dt0, d1, v1, dt1) in enumerate(dataloader):
         d0, v0 = d0.to(device), v0.to(device)
         d1, v1 = d1.to(device), v1.to(device)
+        dt0 = dt0.to(device)
+        dt1 = dt1.to(device)
 
-        d1_pred = model(d0, v0, dt0)
+        d1_pred = model(d0, v0, dt0).to(device)
 
         loss = loss_fn(d1_pred, d1)
         train_loss += loss.item()
@@ -190,8 +192,10 @@ def validation_step(model, dataloader, loss_fn, device):
         for batch_idx, (d0, v0, dt0, d1, v1, dt1) in enumerate(dataloader):
             d0, v0 = d0.to(device), v0.to(device)
             d1, v1 = d1.to(device), v1.to(device)
+            dt0 = dt0.to(device)
+            dt1 = dt1.to(device)
 
-            d1_pred = model(d0, v0, dt0)
+            d1_pred = model(d0, v0, dt0).to(device)
 
             loss = loss_fn(d1_pred, d1)
             valid_loss += loss.item()
@@ -212,10 +216,12 @@ def images_step(data_path, model, dataloader, device):
         for idx, (d0, v0, dt0, d1, v1, dt1) in enumerate(dataloader):
             d0, v0 = d0.to(device), v0.to(device)
             d1, v1 = d1.to(device), v1.to(device)
+            dt0 = dt0.to(device)
+            dt1 = dt1.to(device)
 
             assert d1.size(0) == 1
 
-            d1_pred = model(d0, v0, dt0)
+            d1_pred = model(d0, v0, dt0).to(device)
 
             io.imwrite("%s/in_%d.png" % (out_dir, dt1), d1.cpu().numpy().squeeze(0).squeeze(0))
             io.imwrite("%s/out_%d.png" % (out_dir, dt1), d1_pred.cpu().squeeze(0).squeeze(0))
@@ -244,7 +250,7 @@ def main(data_path):
 
     model = SimpleBoltzmann(grid_h=64, grid_w=64, chs=3).to(DEVICE)
 
-    criterion = nn.MSELoss()
+    criterion = nn.MSELoss().to(DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
     print("Starting training...")
