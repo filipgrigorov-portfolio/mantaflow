@@ -33,9 +33,9 @@ TIME = 50
 CHANNELS = 1
 
 SAVE_DATA_PATH = 'diffusion_data_comparisons/'
-if not os.path.exists():
-    cwd = os.getcwd()
-    save_path = os.path.join(cwd, SAVE_DATA_PATH)
+cwd = os.getcwd()
+save_path = os.path.join(cwd, SAVE_DATA_PATH)
+if not os.path.exists(save_path):
     print(f'Creating {save_path}\n')
     os.mkdir(save_path)
 
