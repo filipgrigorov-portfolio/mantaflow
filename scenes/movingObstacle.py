@@ -13,7 +13,7 @@ flags   = s.create(FlagGrid)
 vel     = s.create(MACGrid)
 density = s.create(RealGrid)
 pressure = s.create(RealGrid)
-obsVel  = s.create(MACGrid)
+obsVel  = s.create(MACGrid) # obstacle velocity
 
 bWidth = 1
 flags.initDomain(boundaryWidth=bWidth) 

@@ -92,9 +92,10 @@ class MantaFlow2DDataset(Dataset):
         return self.densities.shape[0]
 
 
-
+# Linear added noise with TIME steps
 def linear_beta_schedule(timesteps, start=0.0001, end=0.02):
     return torch.linspace(start, end, timesteps)
+
 
 def get_index_from_list(vals, t, x_shape):
     """ 
@@ -105,17 +106,18 @@ def get_index_from_list(vals, t, x_shape):
     out = vals.gather(-1, t.cpu())
     return out.reshape(batch_size, *((1,) * (len(x_shape) - 1))).to(t.device)
 
-def forward_diffusion_sample(x_0, t, sqrt_alphas_cumprod, sqrt_one_minus_alphas_cumprod):
+def forward_diffusion_sample(d0, t, sqrt_alphas_cumprod, sqrt_one_minus_alphas_cumprod):
     """ 
     Takes an image and a timestep as input and 
     returns the noisy version of it
     """
-    noise = torch.randn_like(x_0)
-    sqrt_alphas_cumprod_t = get_index_from_list(sqrt_alphas_cumprod, t, x_0.shape)
-    sqrt_one_minus_alphas_cumprod_t = get_index_from_list(sqrt_one_minus_alphas_cumprod, t, x_0.shape)
+
+    noise = torch.randn_like(d0)
+    sqrt_alphas_cumprod_t = get_index_from_list(sqrt_alphas_cumprod, t, d0.shape)
+    sqrt_one_minus_alphas_cumprod_t = get_index_from_list(sqrt_one_minus_alphas_cumprod, t, d0.shape)
 
     # mean + variance
-    return sqrt_alphas_cumprod_t.to(DEVICE) * x_0.to(DEVICE) + sqrt_one_minus_alphas_cumprod_t.to(DEVICE) * noise.to(DEVICE), noise.to(DEVICE)
+    return sqrt_alphas_cumprod_t.to(DEVICE) * d0 + sqrt_one_minus_alphas_cumprod_t.to(DEVICE) * noise.to(DEVICE), noise.to(DEVICE)
 
 
 class Block(nn.Module):
@@ -225,11 +227,10 @@ class SimpleUnet(nn.Module):
         return self.output(x)
     
 
-def get_loss(model, x_0, t, sqrt_alphas_cumprod, sqrt_one_minus_alphas_cumprod):
-    x_noisy, noise = forward_diffusion_sample(x_0, t, sqrt_alphas_cumprod, sqrt_one_minus_alphas_cumprod)
-    noise_pred = model(x_noisy, t).to(DEVICE)
-    return F.l1_loss(noise, noise_pred)
-
+def train_step(model, d0, time_steps, sqrt_alphas_cumprod, sqrt_one_minus_alphas_cumprod):
+    x_noisy, noise = forward_diffusion_sample(d0, time_steps, sqrt_alphas_cumprod, sqrt_one_minus_alphas_cumprod)
+    noise_pred = model(x_noisy, time_steps).to(DEVICE)
+    return noise, noise_pred
 
 
 # data: [50, 1, 64, 64]
@@ -280,22 +281,25 @@ def sample_timestep(model, x, t, betas, sqrt_recip_alphas, sqrt_one_minus_alphas
 
 @torch.no_grad()
 def sample_plot_image(model, betas, sqrt_recip_alphas, sqrt_one_minus_alphas_cumprod, posterior_variance, epoch_idx):
-    # Sample noise
+    # Sample noise -> generate noisy xt
     img = torch.randn((1, CHANNELS, GRID_SIZE, GRID_SIZE), device=DEVICE)
     plt.figure(figsize=(15, 15))
     plt.axis('off')
-    num_images = 10
+    num_images = 1
+    # 5
     stepsize = int(TIME / num_images)
 
-    # Note: Denoise backwards
+    # Note: Denoise backwards (from learned distribution)
     for i in range(0, TIME)[::-1]:
         t = torch.full((1,), i, device=DEVICE, dtype=torch.long)
+        # [1, 1, 64, 64]
         img = sample_timestep(model, img, t, betas, sqrt_recip_alphas, sqrt_one_minus_alphas_cumprod, posterior_variance)
 
         # Edit: This is to maintain the natural range of the distribution
         img = torch.clamp(img, -1.0, 1.0)
         if i % stepsize == 0:
-            plt.subplot(1, num_images, int(i/stepsize)+1)
+            plt.title(f'{i}')
+            plt.subplot(1, num_images, int(i / stepsize) + 1)
             show_tensor_image(img.detach().cpu(), epoch_idx)
 
 
@@ -305,28 +309,32 @@ def sample_plot_image(model, betas, sqrt_recip_alphas, sqrt_one_minus_alphas_cum
 @torch.no_grad()
 def sample(model, dataloader, betas, sqrt_recip_alphas, sqrt_one_minus_alphas_cumprod, posterior_variance):
     # Sample noise
-    noisy_img = torch.randn(size=(1, CHANNELS, GRID_SIZE< GRID_SIZE), device=DEVICE)
+    noisy_img = torch.randn(size=(1, CHANNELS, GRID_SIZE, GRID_SIZE), device=DEVICE)
 
     # Denoise
+    # TODO: condition on previous input
     for batch_idx, (d0, v0, time) in enumerate(dataloader):
+        print(f'Processing batch: {batch_idx + 1}/{len(dataloader)}')
         d0 = d0.to(DEVICE)
         v0 = v0.to(DEVICE)
-        time = torch.full((1,), time, device=DEVICE, dtype=torch.long)
+        #time = time.to(DEVICE)
         
-        betas_t = get_index_from_list(betas, time, noisy_img.shape)
-        sqrt_one_minus_alphas_cumprod_t = get_index_from_list(sqrt_one_minus_alphas_cumprod, time, noisy_img.shape)
-        sqrt_recip_alphas_t = get_index_from_list(sqrt_recip_alphas, time, noisy_img.shape)
-        
-        # Call model (current image - noise prediction)
-        model_mean = sqrt_recip_alphas_t * (noisy_img - betas_t * model(noisy_img, time) / sqrt_one_minus_alphas_cumprod_t)
-        posterior_variance_t = get_index_from_list(posterior_variance, time, noisy_img.shape)
-        
-        # Get the image for t + 1
-        d0_pred = model_mean if time == 0 else model_mean + torch.sqrt(posterior_variance_t) * torch.randn_like(noisy_img)
-
+        # We need to denoise for these many steps
+        d0_pred = None
+        for i in range(0, TIME)[::-1]:
+            t = torch.full((1,), i, device=DEVICE, dtype=torch.long)
+            d0_pred = sample_timestep(model, noisy_img, t, betas, sqrt_recip_alphas, sqrt_one_minus_alphas_cumprod, posterior_variance)
+            d0_pred = torch.clamp(d0_pred, -1, 1)
+            
         # Save images (pred, gt)
-        io.imwrite("%s/in_%d.png" % (SAVE_DATA_PATH, time), d0.cpu().numpy().squeeze(0).squeeze(0))
-        io.imwrite("%s/out_%d.png" % (SAVE_DATA_PATH, time), d0_pred.cpu().squeeze(0).squeeze(0))
+        reverse_transforms = T.Compose([
+            T.Lambda(lambda t: (t + 1) / 2),
+            T.ToPILImage(),
+        ])
+
+        d0_pred = reverse_transforms(d0_pred.squeeze(0).squeeze(0))
+        #io.imwrite("%s/in_%d.png" % (SAVE_DATA_PATH, time), d0.detach().cpu().numpy().squeeze(0).squeeze(0))
+        io.imwrite("%s/out_%d.png" % (SAVE_DATA_PATH, time), d0_pred)
 
 
 def simulate_forward_diffusion(dataloader, sqrt_one_minus_alphas_cumprod, sqrt_alphas_cumprod):
@@ -369,14 +377,22 @@ def main(data_path, betas, alphas, alphas_cumprod, alphas_cumprod_prev, sqrt_rec
     train_dataloader = DataLoader(dataset=train_dataset, batch_size=BATCH_SIZE, shuffle=True, pin_memory=True)
     validation_dataloader = DataLoader(dataset=validation_dataset, batch_size=1, shuffle=False, pin_memory=True)
 
-    EPOCHS = 300
+    '''
+    EPOCHS = 200
     for epoch in range(EPOCHS):
         for step, batch in enumerate(train_dataloader):
+            d0 = batch[0].to(DEVICE)
+            v0 = batch[1].to(DEVICE)
+            time = batch[2].to(DEVICE)
+
             optimizer.zero_grad()
 
-            t = torch.randint(0, TIME, (BATCH_SIZE,), device=DEVICE).long()
+            # t embedding
+            time_steps = torch.randint(0, TIME, (BATCH_SIZE,), device=DEVICE).long()
             
-            loss = get_loss(model, batch[0], t, sqrt_alphas_cumprod, sqrt_one_minus_alphas_cumprod)
+            # Learn to denoise
+            noise, noise_pred = train_step(model, d0, time_steps, sqrt_alphas_cumprod, sqrt_one_minus_alphas_cumprod)
+            loss = F.l1_loss(noise, noise_pred)
 
             loss.backward()
             
@@ -388,10 +404,20 @@ def main(data_path, betas, alphas, alphas_cumprod, alphas_cumprod_prev, sqrt_rec
             if epoch % 15 == 0 and step == 0:
                 print('Printing progress')
                 sample_plot_image(model, betas, sqrt_recip_alphas, sqrt_one_minus_alphas_cumprod, posterior_variance, epoch)
-    
-    print('Serialize final evaluation')
-    sample(model, validation_dataloader, betas, sqrt_recip_alphas, sqrt_one_minus_alphas_cumprod, posterior_variance, epoch)
 
+    # Save the trained weights
+    torch.save(model.state_dict(), f"model_diffusion_weights/state_dict.pt")
+    '''
+    model.load_state_dict(torch.load(f"model_diffusion_weights/state_dict.pt"))
+    model.eval()
+        
+    #print("Evaluate after training")
+    #for batch_idx, batch in enumerate(validation_dataloader):
+    #    sample_plot_image(model, betas, sqrt_recip_alphas, sqrt_one_minus_alphas_cumprod, posterior_variance, batch_idx)
+
+    print('Serialize final evaluation')
+    sample(model, validation_dataloader, betas, sqrt_recip_alphas, sqrt_one_minus_alphas_cumprod, posterior_variance)
+    
 
 def test(data_path, betas, alphas, alphas_cumprod, alphas_cumprod_prev, sqrt_recip_alphas, sqrt_alphas_cumprod, sqrt_one_minus_alphas_cumprod, posterior_variance):
     transforms = T.Compose([
