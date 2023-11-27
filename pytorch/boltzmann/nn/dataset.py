@@ -1,7 +1,7 @@
 import numpy as np
 import os
 import sys
-sys.path.append("../../tensorflow/tools")
+sys.path.append("./tools")
 import uniio
 
 import torch

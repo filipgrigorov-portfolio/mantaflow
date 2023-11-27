@@ -8,7 +8,7 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import random
-import sys
+from tqdm.auto import tqdm
 
 random.seed(9)
 np.random.seed(9)
@@ -64,46 +64,18 @@ class SimpleBoltzmann(nn.Module):
         # Note: [batch x 3 x h x w]
         df = df.view(-1, self.k, self.h, self.w)
         
-        f = boltzmann_distribution(v0, self.temperature)
-        d = f + df
-        v1_pred = v0 * d
-
+        f = torch.sigmoid(boltzmann_distribution(v0, self.temperature))
+        d = torch.relu(f + df)
         # Note: [10, 1, 64, 64]
         d1_pred = torch.zeros((f.size(0), 1, f.size(2), f.size(3))).to(DEVICE).float()
         d1_pred[:, 0, ...] = (d[:, 0, ...] + d[:, 1, ...]) / 2
 
+        v1_pred = v0 * df
+
         return d1_pred, v1_pred
 
-
-def train_step(model, dataloader, loss_fn, optimizer, device):
-    model.train()
-
-    train_loss = 0.0
-
-    for batch_idx, (d0, v0, dt0, d1, v1, dt1) in enumerate(dataloader):
-        d0, v0 = d0.to(device), v0.to(device)
-        d1, v1 = d1.to(device), v1.to(device)
-        dt0 = dt0.to(device)
-        dt1 = dt1.to(device)
-
-        d1_pred = model(d0, v0, dt0)
-
-        loss = loss_fn(d1_pred, d1)
-        train_loss += loss.item()
-
-        if batch_idx % 200 == 199:
-            print(f'\t{batch_idx + 1}/{len(dataloader)}: {train_loss / (batch_idx + 1)}')
-    
-        optimizer.zero_grad()
-
-        loss.backward()
-
-        optimizer.step()
-
-    return train_loss
-
 # Note: Uses predictions instead of gt data, after the process has started
-def train_stepV2(model, dataloader, loss_fn, optimizer, device):
+def train_step(model, dataloader, loss_fn, optimizer, device):
     model.train()
 
     train_loss = 0.0
@@ -135,8 +107,8 @@ def train_stepV2(model, dataloader, loss_fn, optimizer, device):
         optimizer.step()
 
         # dt+1 = d`t+1
-        d0 = d1_pred.detach().clone()
-        v0 = v1_pred.detach().clone()
+        #d0 = d1_pred.detach().clone()
+        v0 *= v1_pred.detach().clone()
 
     return train_loss
 
@@ -185,8 +157,15 @@ def images_step(data_path, model, dataloader, device, out_subdir=''):
         # Note: Updated with velocities update
         d1_pred, v1_pred = model(d0, v0, dt0)
 
-        io.imwrite("%s/in_%d.png" % (OUTPUT_DATA_PATH, dt1), d1.cpu().numpy().squeeze(0).squeeze(0))
-        io.imwrite("%s/out_%d.png" % (OUTPUT_DATA_PATH, dt1), d1_pred.cpu().squeeze(0).squeeze(0))
+        img1 = d1.cpu().numpy().squeeze(0).squeeze(0).astype(np.float32)
+        img2 = d1_pred.cpu().numpy().squeeze(0).squeeze(0).astype(np.float32)
+        img3 = v1_pred.cpu().numpy().squeeze(0).transpose(1, 2, 0)[:, :, 0].astype(np.float32)
+        img4 = v1_pred.cpu().numpy().squeeze(0).transpose(1, 2, 0)[:, :, 1].astype(np.float32)
+        idx = dt1.cpu()[0]
+        io.imwrite(f"{OUTPUT_DATA_PATH}/in_{idx}.jpg", img1)
+        io.imwrite(f"{OUTPUT_DATA_PATH}/out_{idx}.jpg", img2)
+        io.imwrite(f"{OUTPUT_DATA_PATH}/out_vel_x{idx}.jpg", img3)
+        io.imwrite(f"{OUTPUT_DATA_PATH}/out_vel_y{idx}.jpg", img4)
 
         # dt+1 = d`t+1
         d0 = d1_pred.detach().clone()
@@ -196,7 +175,7 @@ def images_step(data_path, model, dataloader, device, out_subdir=''):
 
 
 def main(data_path):
-    EPOCHS = 100
+    EPOCHS = 500
     BATCH_SIZE = 30
 
     transforms = T.Compose([
@@ -219,22 +198,19 @@ def main(data_path):
     optimizer = optim.Adam(model.parameters(), lr=1e-2)
 
     print("Starting training...")
-    for epoch in range(EPOCHS):
-        train_loss = train_stepV2(model, train_dataloader, criterion, optimizer, DEVICE)
+    for epoch in tqdm(range(EPOCHS), desc=f"Training progress", colour="#00ff00"):
+        train_loss = train_step(model, train_dataloader, criterion, optimizer, DEVICE)
         num_batches = len(train_dataloader)
         print(f'{epoch + 1}/{EPOCHS}: {train_loss / num_batches}')
-
-        if epoch == 0 or epoch == EPOCHS - 1:
-            abs_inter_data_path = os.path.join(os.getcwd(), f'{OUTPUT_DATA_PATH}/')
-            images_step(abs_inter_data_path, model, validation_dataloader, DEVICE, f"epoch{epoch}")
 
         if epoch == EPOCHS - 1:
             valid_loss = validation_step(model, validation_dataloader, criterion, DEVICE)
             num_batches = len(validation_dataloader)
             print(f'Validation -> {epoch + 1}/{EPOCHS}: {valid_loss / num_batches}')
 
-            # Write out the produced images
-            #images_step(DATA_PATH, model, validation_dataloader, DEVICE)
+        #if epoch == EPOCHS - 1:
+        #    abs_inter_data_path = os.path.join(os.getcwd(), f'{OUTPUT_DATA_PATH}/')
+        #    images_step(abs_inter_data_path, model, validation_dataloader, DEVICE, f"epoch{epoch}")
 
     # Save the model
     torch.save(model.state_dict(), f"{WEIGHTS_OUTPUT_PATH}/checkpoint.pt")
