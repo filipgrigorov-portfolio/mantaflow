@@ -30,7 +30,7 @@ STORE_PATH_WEIGHTS = f"weights/ddpm_model_smoke.pt"
 
 def train(display=True, continue_from_checkpoint=False, show_forward_process=False, show_backward_process=False):
     from model import DDPM, UNet, DEVICE
-    EPOCHS = 300
+    EPOCHS = 500
     LR = 1e-3
 
     # Originally used by the authors
@@ -68,7 +68,7 @@ def train(display=True, continue_from_checkpoint=False, show_forward_process=Fal
             d0 = batch[0].to(DEVICE)
             v0 = batch[1][:, :2, ...].to(DEVICE)
             # Note: x0 (original image) is the vx and vy and y is the d0 or any other ICs or BCs (grid-like inputs)
-            x0 = torch.concat([v0, d0], dim=1)
+            x0 = torch.concat([d0, v0], dim=1)
             n = len(x0)
 
             # Picking some noise for each of the images in the batch, a timestep and the respective alpha_bars
@@ -80,6 +80,8 @@ def train(display=True, continue_from_checkpoint=False, show_forward_process=Fal
 
             # Getting model estimation of noise based on the images and the time-step (BACKWARD)
             eta_pred = ddpm.backward(noisy_imgs, t.reshape(n, -1))
+
+            #TODO Re-feed the predicted image as conditioning
 
             # Optimizing the MSE between the noise plugged and the predicted noise
             #v0_pred = get preidction here
@@ -114,8 +116,8 @@ def train(display=True, continue_from_checkpoint=False, show_forward_process=Fal
         show_forward(ddpm, loader, DEVICE)
 
     if show_backward_process:
-        generated = generate_new_images(ddpm, gif_name="before_training.gif")
-        show_images(generated, "Images generated before training")
+        generated = generate_new_images(ddpm, gif_name="after_training.gif")
+        show_images(generated, "Images generated after training")
 
     print('End of training')
 
@@ -156,7 +158,7 @@ if __name__ == "__main__":
     elif args.train:
         """Learn the distribution"""
         print('Training mode')
-        train(continue_from_checkpoint=args.from_checkpoint)
+        train(continue_from_checkpoint=args.from_checkpoint, show_backward_process=True)
     elif args.eval:
         """Generate block images from distribution"""
         print('Evaluation mode')

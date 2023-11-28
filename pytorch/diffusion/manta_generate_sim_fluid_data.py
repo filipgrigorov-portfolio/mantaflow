@@ -8,22 +8,20 @@ import os, shutil, math, sys, time
 import numpy as np
 sys.path.append("./tools")
 import paramhelpers as ph
+import copy
 
 # Definitions
 WITH_OBSTACLES = True # Experiment
+MAX_NUM_OBSTACLES = 9
 
 def run_simulation():
 	# Main params  ----------------------------------------------------------------------#
-	steps    = 100
-	savedata = True
+	steps    = 300
+	savedata = False # save data or not
 	simNo    = 1000  # start ID
 	basePath = "data/"#"test_data/"
 	npSeedstr   = "-1"
-
-	# enable for debugging
-	#steps = 30       # shorter test
-	#savedata = False # debug , dont write...
-	showGui  = False  # show UI
+	showGui  = True  # show UI
 
 	basePath        =     ph.getParam( "basePath",        basePath        )
 	npSeedstr       =     ph.getParam( "npSeed"  ,        npSeedstr       )
@@ -31,15 +29,14 @@ def run_simulation():
 	ph.checkUnusedParams()
 
 	# Scene settings  ---------------------------------------------------------------------#
+	# Note: set debug level for messages (0 off, 1 regular, higher = more, up to 10) 
 	setDebugLevel(1)
 
 	# Solver params  ----------------------------------------------------------------------#
 	GRID_SIZE = 64
-	dim = 2 
+	dim = 2
 	offset = 20
 	interval = 1
-
-	scaleFactor = 4
 
 	gs = vec3(GRID_SIZE, GRID_SIZE, 1 if dim == 2 else GRID_SIZE )
 	buoy = vec3(0, -1e-3, 0)
@@ -55,6 +52,8 @@ def run_simulation():
 	vel      = sm.create(MACGrid)
 	density  = sm.create(RealGrid)
 	pressure = sm.create(RealGrid)
+	phiObs = sm.create(LevelsetGrid)
+	fractions = sm.create(MACGrid)
 
 	# open boundaries
 	bWidth=1
@@ -71,7 +70,7 @@ def run_simulation():
 	noise    = []
 	sources  = []
 
-	num_obstacles = 1
+	num_obstacles = np.random.randint(low=0, high=MAX_NUM_OBSTACLES)
 	obstacles = []
 
 	noiseN = 12
@@ -115,16 +114,20 @@ def run_simulation():
 	vtheta = Vrandom[2] * math.pi * 0.5
 	velInflow = 0.04 * vec3(math.sin(vtheta), math.cos(vtheta), 0)
 
-
-	# Note: Static, FOR NOW, obstacle TODO
+	# Obstacles
 	for idx in range(num_obstacles):
-		obsPos = vec3(0.5, 0.5, 0.0)
-		obsSize = 0.1
-		obs = Sphere( parent=sm, center=gs * obsPos, radius=GRID_SIZE * obsSize)
-		phiObs = obs.computeLevelset()
-		setObstacleFlags(flags=flags, phiObs=phiObs)
-		flags.fillGrid()
-		obstacles.append([obs, phiObs])
+		random_x = np.random.rand(1)
+		random_y = np.random.rand(1)
+		obsPos = vec3(random_x, random_y, 0.0)
+		obsSize = np.random.uniform(0.05, 0.2)
+		obs = sm.create(Sphere, center=gs * obsPos, radius=GRID_SIZE * obsSize)
+		phiObs.join(obs.computeLevelset())
+		#setObstacleFlags(flags=flags, phiObs=phiObs)
+		#flags.fillGrid()
+		obstacles.append(obs)
+	updateFractions(flags=flags, phiObs=phiObs, fractions=fractions, boundaryWidth=bWidth)
+	setObstacleFlags(flags=flags, phiObs=phiObs)
+	flags.fillGrid()
 
 
 	# 2D
@@ -158,7 +161,6 @@ def run_simulation():
 		gui.pause()
 
 	t = 0
-	resetN = 20
 
 	if savedata:
 		folderNo = simNo
@@ -183,8 +185,8 @@ def run_simulation():
 
 		# Note: set zero normal velocity boundary condition on walls
 		for idx in range(num_obstacles):
-			setWallBcs(flags=flags, vel=vel, phiObs=obstacles[idx][1])
-			obstacles[idx][0].applyToGrid(grid=density, value=0.) # clear smoke inside
+			setWallBcs(flags=flags, vel=vel, phiObs=phiObs)
+			obstacles[idx].applyToGrid(grid=density, value=0.) # clear smoke inside
 		if num_obstacles == 0:
 			setWallBcs(flags=flags, vel=vel)
 
@@ -196,8 +198,8 @@ def run_simulation():
 		
 		# Note: set zero normal velocity boundary condition on walls
 		for idx in range(num_obstacles):
-			setWallBcs(flags=flags, vel=vel, phiObs=obstacles[idx][1])
-			obstacles[idx][0].applyToGrid(grid=density, value=0.) # clear smoke inside
+			setWallBcs(flags=flags, vel=vel, phiObs=phiObs)
+			obstacles[idx].applyToGrid(grid=density, value=0.) # clear smoke inside
 		if num_obstacles == 0:
 			setWallBcs(flags=flags, vel=vel)
 

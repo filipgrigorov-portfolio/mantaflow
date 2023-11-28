@@ -69,7 +69,7 @@ if 1:
 
 
 flags.updateFromLevelset(phi)
-phi.subtract( phiObs );
+phi.subtract( phiObs )
 sampleLevelsetWithParticles( phi=phi, flags=flags, parts=pp, discretization=2, randomness=0.05 )
 
 if fluidVel!=0:
@@ -78,6 +78,7 @@ if fluidVel!=0:
 	mapGridToPartsVec3(source=vel, parts=pp, target=pVel )
 
 # also sets boundary flags for phiObs
+# update fill fraction values
 updateFractions( flags=flags, phiObs=phiObs, fractions=fractions, boundaryWidth=bWidth )
 setObstacleFlags(flags=flags, phiObs=phiObs, fractions=fractions)
 
@@ -110,7 +111,7 @@ while s.frame < frames:
 
 	# combine level set of particles with grid level set
 	phi.addConst(1.); # shrink slightly
-	phi.join( phiParts );
+	phi.join( phiParts )
 	extrapolateLsSimple(phi=phi, distance=narrowBand+2, inside=True ) 
 	extrapolateLsSimple(phi=phi, distance=3 )
 	phi.setBoundNeumann(0) # make sure no particles are placed at outer boundary, warning - larger values can delete thin sheets at outer walls...
