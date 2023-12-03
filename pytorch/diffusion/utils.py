@@ -13,7 +13,7 @@ from torchvision import transforms as T
 #Definitions
 BATCH_SIZE = 8
 GRID_SIZE = 64
-CHANNELS = 3
+CHANNELS = 5 # d0 (ch = 1), v (ch = 2), v_prev (ch = 2)
 
 OUTPUT_DATA_PATH = "results/"
 
@@ -187,15 +187,21 @@ def generate_new_images(ddpm, n_samples=16, device=None, frames_per_gif=100, gif
 
 
 # Network utils
-def transform_ops():
+def default_transform_ops():
     return T.Compose([
         T.ToTensor(),
         # Note: [-1, 1] as DDPM generates a normally distributed data
         T.Lambda(lambda x: (x - 0.5) * 2)]
     )
 
+def inverse_default_transform_ops():
+    return T.Compose([
+        T.Lambda(lambda t: (t + 1) / 2)],
+        T.ToPILImage()
+    )
+
 def generate_dataset(datapath, grid_h=GRID_SIZE, grid_w=GRID_SIZE, start=1000, end=2000):
-    return MantaFlow2DDataset(data_path=datapath, start_itr=start, end_itr=end, grid_height=grid_h, grid_width=grid_w, transform_ops=transform_ops())
+    return MantaFlow2DDataset(data_path=datapath, start_itr=start, end_itr=end, grid_height=grid_h, grid_width=grid_w, transform_ops=default_transform_ops())
 
 def generate_dataloader(datapath, eval=False):
     if eval:
