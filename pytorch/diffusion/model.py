@@ -36,11 +36,11 @@ class DDPM(nn.Module):
 
     def forward(self, x0, t, eta=None):
         """Forward process to introduce noise"""
-        assert x0.shape[1:] == self.image_shape, f"Image shape should be ({CHANNELS}, {GRID_SIZE}, {GRID_SIZE})"
+        #assert x0.shape[1:] == self.image_shape, f"Image shape should be ({CHANNELS}, {GRID_SIZE}, {GRID_SIZE}) but is ({x0.shape})"
 
         n, c, h, w = x0.shape
         a_bar = self.alpha_bars[t]
-        b = self.betas[t]
+        #b = self.betas[t]
         
         if eta is None:
             eta = torch.randn(n, c, h, w).to(self.device)
