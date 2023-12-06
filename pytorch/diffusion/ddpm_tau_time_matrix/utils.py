@@ -7,7 +7,7 @@ import os
 import torch
 from torch.utils.data import Dataset, DataLoader
 
-from dataset import MantaFlow2DDataset, MantaFlow2DSimSequenceDataset
+from dataset import MantaFlow2DDataset, MantaFlow2DSimSequenceDataset, MantaFlow2DSimXYDataset
 from torchvision import transforms as T
 
 #Definitions
@@ -28,7 +28,7 @@ def show_images(images, title=""):
         images = images.detach().cpu().numpy()
 
     # Defining number of rows and columns
-    fig = plt.figure(figsize=(8, 8))
+    fig = plt.figure(figsize=(16, 16))
     num_images = len(images)
     rows = int(num_images ** (1 / 2))
     cols = round(num_images / rows)
@@ -40,7 +40,7 @@ def show_images(images, title=""):
             fig.add_subplot(rows, cols, idx + 1)
 
             if idx < len(images):
-                plt.imshow(images[idx][0], cmap="gray")
+                plt.imshow(images[idx][0])
                 idx += 1
     fig.suptitle(title, fontsize=30)
 
@@ -103,7 +103,7 @@ def show_compound_images(images, title=""):
 def show_first_batch(loader):
     """Shows the images in the first batch of a DataLoader object"""
     for batch in loader:
-        show_images(batch[0], "Images in the first batch")
+        show_images(batch[1], "Images in the first batch")
         break
 
 def show_forward(ddpm, loader, device):
@@ -201,7 +201,7 @@ def inverse_default_transform_ops():
     )
 
 def generate_dataset(datapath, grid_h=GRID_SIZE, grid_w=GRID_SIZE, start=1000, end=2000):
-    return MantaFlow2DSimSequenceDataset(data_path=datapath, start_itr=start, end_itr=end, grid_height=grid_h, grid_width=grid_w, transform_ops=default_transform_ops())
+    return MantaFlow2DSimXYDataset(data_path=datapath, start_itr=start, end_itr=end, grid_height=grid_h, grid_width=grid_w, transform_ops=default_transform_ops())
 
 def generate_dataloader(datapath, eval=False):
     if eval:

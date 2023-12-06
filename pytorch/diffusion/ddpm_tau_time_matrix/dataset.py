@@ -9,6 +9,7 @@ from torch.utils.data import Dataset
 
 # Definitions
 TOTAL_SIMULATION_TIME = 100 # length of sequences
+DEBUG = True
 
 def load_sim_file(data_path, sim, type_name, idx):
     uniPath = "%s/simSimple_%04d/%s_%04d.uni" % (data_path, sim, type_name, idx)  # 100 files per sim
@@ -21,7 +22,7 @@ def load_sim_file(data_path, sim, type_name, idx):
     return arr
 
 class MantaFlow2DSimSequenceDataset(Dataset):
-    """Provides dt, vt, t"""
+    """Provides dt, vt, tau in a sequence of length TOTAL_SIMULATION_TIME"""
     def __init__(self, data_path, start_itr=1000, end_itr=2000, grid_width=64, grid_height=64, transform_ops=None):
         self.transform_ops = transform_ops
 
@@ -61,6 +62,13 @@ class MantaFlow2DSimSequenceDataset(Dataset):
         self.batched_velocities = np.array(self.batched_velocities)
         print(f"Shape of batchified densities sims: {self.batched_densities.shape}")
         print(f"Shape of batchified velocities sims: {self.batched_velocities.shape}") # [20, 100, 64, 64, 2]
+
+        if DEBUG:
+            from utils_seq import show_compound_images_seq_single_ch
+            print('Debug printing data')
+            vel_vals = self.batched_velocities[3]
+            show_compound_images_seq_single_ch(vel_vals, title="dataset_debug_")
+            raise('debug')
 
         # Note: Identical entries normalized by the TOTAL_SIMULATION_TIME
         tau_range = torch.arange(0, TOTAL_SIMULATION_TIME)
@@ -103,6 +111,57 @@ class MantaFlow2DSimSequenceDataset(Dataset):
     def __len__(self):
         assert self.batched_densities.shape[0] == self.batched_velocities.shape[0]
         return self.batched_velocities.shape[0]
+    
+class MantaFlow2DSimXYDataset(Dataset):
+    """Provides dt, vt, tau as a triplet, individually"""
+    def __init__(self, data_path, start_itr=1000, end_itr=2000, grid_width=64, grid_height=64, transform_ops=None):
+        self.transform_ops = transform_ops
+
+        self.data = []
+
+        # Note: Identical entries normalized by the TOTAL_SIMULATION_TIME
+        tau_range = np.arange(0, TOTAL_SIMULATION_TIME)
+        XX, _ = np.meshgrid(tau_range, tau_range, indexing="ij")
+        self.tau = np.stack([ np.tile(XX[t], reps=(TOTAL_SIMULATION_TIME, 1))[: grid_height, : grid_width, np.newaxis] for t in range(TOTAL_SIMULATION_TIME) ], axis=0)
+        self.tau = self.tau / (TOTAL_SIMULATION_TIME - 1) # [TOTAL_SIMULATION_TIME, 64, 64, 1]
+        print(f"Shape of tau: {self.tau.shape}")
+
+        for sim in range(start_itr, end_itr): 
+            if os.path.exists( "%s/simSimple_%04d" % (data_path, sim) ):
+
+                for t in range(0, TOTAL_SIMULATION_TIME):
+                    dt = load_sim_file(data_path, sim, 'density', t)
+                    vt = load_sim_file(data_path, sim, 'vel', t)
+                    xt = np.dstack([dt, vt, self.tau[t]])
+                    self.data.append(xt)
+
+        num_data = len(self.data)
+        NUM_SIMS = 1
+        assert num_data >= NUM_SIMS, f"Number of simulations should be at least {NUM_SIMS}"
+        print(f'Loaded {num_data} data triplets') # [20, 100, 64, 64, 4]
+
+    def __getitem__(self, idx):
+        d0 = self.data[idx][..., :1]
+        v0 = self.data[idx][..., 1:3]
+        tau = self.data[idx][..., -1:]
+
+        v0 = (v0 - v0.min()) / (v0.max() - v0.min()) # [0, 1]
+
+        d0_t = torch.from_numpy(d0.transpose(2, 0, 1)).float() # hwc to chw
+        v0_t = torch.from_numpy(v0.transpose(2, 0, 1)).float() # hwc to chw
+        tau_t = torch.from_numpy(tau.transpose(2, 0, 1)).float() # hwc to chw
+
+        #print(d0_t.size())
+        #print(v0_t.size())
+        #print(tau_t.size())
+
+        if self.transform_ops is not None:
+            v0_t = self.transform_ops(v0_t)
+
+        return d0_t, v0_t, tau_t
+
+    def __len__(self):
+        return len(self.data)
 
 class MantaFlow2DDataset(Dataset):
     """Provides dt, vt, t"""

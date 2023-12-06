@@ -75,9 +75,9 @@ def sample_sequence(ddpm, d0, v0, tau, seq_len=9, channels=2, height=GRID_SIZE, 
         if device is None:
             device = ddpm.device
 
-        d_init = d0.to(device)[0]
+        d_init = d0.to(device)#[0]
         #v_prev = v0.to(device)
-        tau = tau.to(device)[0]
+        #tau = tau.to(device)#[0]
 
         frames = []
         for i in range(TOTAL_SIMULATION_TIME):
@@ -88,12 +88,15 @@ def sample_sequence(ddpm, d0, v0, tau, seq_len=9, channels=2, height=GRID_SIZE, 
             #print(x.size())
             #print(d_init[i:i+1].size())
             #print(tau[i:i+1].size())
+            tau_t = tau[i:i+1]
+            #print(tau_t.size())
+            #print(tau_t.max())
 
             # From T to 0, denoise
             for idx, t in enumerate(list(range(ddpm.diffusion_steps))[::-1]):
                 # Estimating noise to be removed
                 time_tensor = (torch.ones(BATCH_SIZE, 1) * t).to(device).long()
-                xt = torch.concat([x, d_init[i:i+1], tau[i:i+1]], dim=1)
+                xt = torch.concat([x, d_init, tau_t], dim=1)
                 eta_theta = ddpm.backward(xt, time_tensor)[:, :2, :, :]
 
                 alpha_t = ddpm.alphas[t]
@@ -131,7 +134,12 @@ def run_sequence_sampling():
 
     sum([p.numel() for p in ddpm.parameters()])
 
-    loader = generate_dataloader(datapath="data/", eval=True)
+    #loader = generate_dataloader(datapath="data/", eval=True)
+    dataset = MantaFlow2DSimXYDataset(
+        data_path="data/", 
+        grid_height=GRID_SIZE, grid_width=GRID_SIZE, 
+        start_itr=1000, end_itr=1001, transform_ops=default_transform_ops())
+    loader = DataLoader(dataset=dataset, batch_size=1, shuffle=False, pin_memory=True)
 
     print('Continuing from checkpoint')
     ddpm.load_state_dict(torch.load(STORE_PATH_WEIGHTS, map_location=DEVICE))
@@ -139,8 +147,8 @@ def run_sequence_sampling():
     d0, v0, tau = next(iter(loader))
     d0 = d0.to(DEVICE)
     v0 = v0[:, :2, ...].to(DEVICE)
-    tau = tau.to(DEVICE)
-    frames = sample_sequence(ddpm, d0, v0, tau, seq_len=20)
+    tau = torch.from_numpy(dataset.tau.transpose(0, 3, 1, 2)).float().to(DEVICE)
+    frames = sample_sequence(ddpm, d0, v0, tau, seq_len=100)
 
     # Adding frames to the GIF
     for idx in range(len(frames)):
@@ -368,6 +376,102 @@ def train_seq(display=True, continue_from_checkpoint=False, show_forward_process
 
     print('End of training')
 
+def train_triplet_d_v_tau(display=True, continue_from_checkpoint=False, show_forward_process=False, show_backward_process=False, with_attention=False):
+    from model import DDPM, UNet, DEVICE, AttentionUNet
+    EPOCHS = 500
+    LR = 1e-4
+    BATCH_SIZE = 8 # multiple of EPOCHS
+
+    # Originally used by the authors
+    diffusion_steps = 400
+    min_beta = 1e-4
+    max_beta = 2e-2
+    ddpm = DDPM(AttentionUNet(output_channels=CHANNELS, diffusion_steps=diffusion_steps), diffusion_steps=diffusion_steps, min_beta=min_beta, max_beta=max_beta, device=DEVICE) if with_attention else \
+        DDPM(UNet(diffusion_steps=diffusion_steps), diffusion_steps=diffusion_steps, min_beta=min_beta, max_beta=max_beta, device=DEVICE)
+
+    sum([p.numel() for p in ddpm.parameters()])
+
+    # Note: data loading
+    loader = DataLoader(generate_dataset(INPUT_DATA_PATH), batch_size=BATCH_SIZE, shuffle=True, pin_memory=True)
+
+    # Display at start of training (Optional)
+    if continue_from_checkpoint:
+        print('Continuing from checkpoint')
+        ddpm.load_state_dict(torch.load(STORE_PATH_WEIGHTS, map_location=DEVICE))
+
+    if show_forward_process:
+        show_forward(ddpm, loader, DEVICE)
+
+    if show_backward_process:
+        generated = generate_new_images_seq(ddpm, gif_name="before_training.gif")
+        show_images(generated, "Images generated before training")
+
+    mse = nn.MSELoss()
+    optimizer = optim.Adam(ddpm.parameters(), LR)
+
+    best_loss = float("inf")
+    diffusion_steps = ddpm.diffusion_steps
+    for epoch in tqdm(range(EPOCHS), desc=f"Training progress", colour="#00ff00"):
+        
+        
+        # Note: Initial d1, v1 are d0 and v0 (conditioning on previous state)
+        d_init, _, _ = next(iter(loader))
+        d_init = d_init.to(DEVICE)
+
+        epoch_loss = 0.0
+        for _, batch in enumerate(tqdm(loader, leave=False, desc=f"Epoch {epoch + 1}/{EPOCHS}", colour="#005500"), start=0):
+            v0 = batch[1].to(DEVICE)
+            tau = batch[2].to(DEVICE)
+            n = len(v0)
+
+            # Picking some noise for each of the images in the batch, a timestep and the respective alpha_bars
+            eta = torch.randn_like(v0).to(DEVICE)                           # ~N(0, 1)
+            t = torch.randint(0, diffusion_steps, (n,)).to(DEVICE)          # t ~U(0, T) -> random steps during the noisifying forward process from the batch
+
+            # Computing the noisy image based on x0 and the time-step (FORWARD)
+            noisy_imgs = ddpm(v0, t, eta)
+
+            # Getting model estimation of noise based on the images and the time-step (BACKWARD)
+            x0 = torch.concat([noisy_imgs, d_init, tau], dim=1) # Note: noise is added only on the velocity fields (vx and vy) -> [batch, 4, 64, 64]
+            eta_pred = ddpm.backward(x0, t.reshape(n, -1) / diffusion_steps)[:, :2, :, :] # Note: Only learn on the noise of the velocity field
+
+            # Optimizing the MSE between the noise plugged and the predicted noise
+            loss = mse(eta_pred, eta)
+
+            optimizer.zero_grad()   
+            
+            loss.backward()
+            
+            optimizer.step()
+
+            epoch_loss += loss.item() * len(x0) / len(loader.dataset)
+
+        # Display images generated at this epoch
+        if display and epoch % 10 == 9:
+            print(f"Saving results at {OUTPUT_DATA_PATH}")
+            show_compound_images_seq(generate_new_images_seq(ddpm, d_init, tau, sim_time=BATCH_SIZE, device=DEVICE, channels=2), f"Images generated at epoch {epoch + 1}")
+
+        log_string = f"\tLoss at epoch {epoch + 1}: {epoch_loss:.3f}"
+
+        # Storing the model
+        if best_loss > epoch_loss:
+            best_loss = epoch_loss
+            torch.save(ddpm.state_dict(), STORE_PATH_WEIGHTS)
+            log_string += " --> Best model ever (stored)"
+
+        print(log_string)
+
+
+    # Display at end of training (Optional)
+    if show_forward_process:
+        show_forward(ddpm, loader, DEVICE)
+
+    if show_backward_process:
+        generated = generate_new_images_seq(ddpm, gif_name="after_training.gif")
+        show_images(generated, "Images generated after training")
+
+    print('End of training')
+
 def evaluate(with_attention=False):
     from model import DDPM, UNet, DEVICE, AttentionUNet
 
@@ -386,7 +490,13 @@ def evaluate(with_attention=False):
 
 def show_data():
     data_path = "data/"
-    show_first_batch(generate_dataloader(data_path))
+    #show_first_batch(generate_dataloader(data_path))
+    dataset = MantaFlow2DSimXYDataset(
+        data_path=data_path, 
+        grid_height=GRID_SIZE, grid_width=GRID_SIZE, 
+        start_itr=1005, end_itr=1006, transform_ops=default_transform_ops())
+    loader = DataLoader(dataset=dataset, batch_size=80, shuffle=False, pin_memory=True)
+    show_first_batch(loader=loader)
 
 
 
@@ -408,7 +518,7 @@ if __name__ == "__main__":
     elif args.train:
         """Learn the distribution"""
         print('Training mode')
-        train_seq(continue_from_checkpoint=args.from_checkpoint, show_backward_process=True, with_attention=args.with_attention)
+        train_triplet_d_v_tau(continue_from_checkpoint=args.from_checkpoint, show_backward_process=True, with_attention=args.with_attention)
     elif args.eval:
         """Generate block images from distribution"""
         print('Evaluation mode')
