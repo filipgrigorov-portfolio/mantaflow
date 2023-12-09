@@ -16,12 +16,12 @@ MAX_NUM_OBSTACLES = 9
 
 def run_simulation():
 	# Main params  ----------------------------------------------------------------------#
-	steps    = 300
-	savedata = False # save data or not
+	steps    = 20 # TOTAL_SIMULATION_TIME
+	savedata = True # save data or not
 	simNo    = 1000  # start ID
-	basePath = "data/"#"test_data/"
+	basePath = "data_20s/"#"test_data/"
 	npSeedstr   = "-1"
-	showGui  = True  # show UI
+	showGui  = False  # show UI
 
 	basePath        =     ph.getParam( "basePath",        basePath        )
 	npSeedstr       =     ph.getParam( "npSeed"  ,        npSeedstr       )
@@ -211,6 +211,7 @@ def run_simulation():
 			tf = (t - offset) / interval
 			density.save(simPath + 'density_%04d.uni' % (tf))
 			vel.save(simPath + 'vel_%04d.uni' % (tf))
+			phiObs.save(simPath + 'boundary_%04d.uni' % (tf))
 
 		sm.step()
 		t = t+1

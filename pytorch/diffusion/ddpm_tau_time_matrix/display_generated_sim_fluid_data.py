@@ -3,11 +3,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 import sys
-sys.path.append("../../tensorflow/tools")
+sys.path.append("./tools")
 import uniio
 
 # Definitions
-DATA_PATH = "test_data/"
+DATA_PATH = "data_20s/"
+TOTAL_SIMULATION_TIME = 20
 
 def show_images(images, title=""):
     """Shows the provided images as sub-pictures in a square"""
@@ -86,26 +87,32 @@ def load_single_sim_file(data_path):
 
 def read_uni_files(data_path, start_itr=1000, end_itr=2000, grid_width=64, grid_height=64):
     densities = []
+    boundaries = []
     velocities = []
 
     for sim in range(start_itr, end_itr): 
         if os.path.exists( "%s/simSimple_%04d" % (data_path, sim) ):
-            for i in range(0, 100):
+            for i in range(0, TOTAL_SIMULATION_TIME):
                 densities.append(load_sim_file(data_path, sim, 'density', i))
+                boundaries.append(load_sim_file(data_path, sim, 'boundary', i))
                 velocities.append(load_sim_file(data_path, sim, 'vel', i))
 
     num_densities = len(densities)
     num_velocities = len(velocities)
-    if num_densities < 200:
-        raise("Error - use at least two full sims, generate data by running 'manta ./manta_genSimSimple.py' a few times...")
+    #if num_densities < 200:
+    #    raise("Error - use at least two full sims, generate data by running 'manta ./manta_genSimSimple.py' a few times...")
 
     densities = np.reshape( densities, (len(densities), grid_height, grid_width, 1) )
     print("Read uni files (density), total data " + format(densities.shape))
+
+    boundaries = np.reshape( boundaries, (len(boundaries), grid_height, grid_width, 1) )
+    print("Read uni files (boundaries), total data " + format(boundaries.shape))
 
     velocities = np.reshape( velocities, (len(velocities), grid_height, grid_width, 3) )
     print("Read uni files (velocity), total data " + format(velocities.shape))
 
     show_images(densities, "densities")
+    show_images(boundaries, "boundaries")
     show_images(velocities[:, :, :, 0], "velocities_x")
     show_images(velocities[:, :, :, 1], "velocities_y")
 
@@ -140,5 +147,5 @@ def show_single_image(uni_path):
 
 
 if __name__ == "__main__":
-    #read_uni_files(data_path=DATA_PATH)
-    show_single_image("test_data/simSimple_1000/")
+    read_uni_files(data_path=DATA_PATH)
+    #show_single_image("test_data/simSimple_1000/")

@@ -1,14 +1,14 @@
 import numpy as np
 import os
 import sys
-sys.path.append("../../tensorflow/tools")
+sys.path.append("./tools")
 import uniio
 
 import torch
 from torch.utils.data import Dataset
 
 # Definitions
-TOTAL_SIMULATION_TIME = 100 # length of sequences
+TOTAL_SIMULATION_TIME = 20 # length of sequences
 DEBUG = True
 
 def load_sim_file(data_path, sim, type_name, idx):
@@ -112,7 +112,7 @@ class MantaFlow2DSimSequenceDataset(Dataset):
         assert self.batched_densities.shape[0] == self.batched_velocities.shape[0]
         return self.batched_velocities.shape[0]
     
-class MantaFlow2DSimXYDataset(Dataset):
+class MantaFlow2DSimTupleDataset(Dataset):
     """Provides dt, vt, tau as a triplet, individually"""
     def __init__(self, data_path, start_itr=1000, end_itr=2000, grid_width=64, grid_height=64, transform_ops=None):
         self.transform_ops = transform_ops
@@ -120,45 +120,69 @@ class MantaFlow2DSimXYDataset(Dataset):
         self.data = []
 
         # Note: Identical entries normalized by the TOTAL_SIMULATION_TIME
-        tau_range = np.arange(0, TOTAL_SIMULATION_TIME)
+        tau_range = np.arange(0, grid_height)
         XX, _ = np.meshgrid(tau_range, tau_range, indexing="ij")
-        self.tau = np.stack([ np.tile(XX[t], reps=(TOTAL_SIMULATION_TIME, 1))[: grid_height, : grid_width, np.newaxis] for t in range(TOTAL_SIMULATION_TIME) ], axis=0)
+        self.tau = np.stack([ np.tile(XX[t], reps=(grid_height, 1))[: grid_height, : grid_width, np.newaxis] for t in range(TOTAL_SIMULATION_TIME) ], axis=0)
+        print(self.tau[0].shape)
         self.tau = self.tau / (TOTAL_SIMULATION_TIME - 1) # [TOTAL_SIMULATION_TIME, 64, 64, 1]
         print(f"Shape of tau: {self.tau.shape}")
 
         for sim in range(start_itr, end_itr): 
             if os.path.exists( "%s/simSimple_%04d" % (data_path, sim) ):
 
+                # ICs/BCs
+                d0 = load_sim_file(data_path, sim, 'density', 0)
+                bc0 = load_sim_file(data_path, sim, 'boundary', 0)
+
+                # Input data
                 for t in range(0, TOTAL_SIMULATION_TIME):
                     dt = load_sim_file(data_path, sim, 'density', t)
-                    vt = load_sim_file(data_path, sim, 'vel', t)
-                    xt = np.dstack([dt, vt, self.tau[t]])
+                    vt = load_sim_file(data_path, sim, 'vel', t)[..., :2]
+                    xt = np.dstack([dt, vt, d0, bc0, self.tau[t]])
                     self.data.append(xt)
 
+                    # debug
+                    #import matplotlib.pyplot as plt
+                    #plt.imshow(self.tau[t], vmin=0, vmax=1)
+                    #plt.savefig(f"tau_train_{t + 1}.jpg")
+
+                #raise('debug')
+
         num_data = len(self.data)
+        print(f"Number data points: {num_data}")
         NUM_SIMS = 1
         assert num_data >= NUM_SIMS, f"Number of simulations should be at least {NUM_SIMS}"
         print(f'Loaded {num_data} data triplets') # [20, 100, 64, 64, 4]
 
     def __getitem__(self, idx):
-        d0 = self.data[idx][..., :1]
-        v0 = self.data[idx][..., 1:3]
-        tau = self.data[idx][..., -1:]
+        dt = self.data[idx][..., 0][..., np.newaxis]
+        vt = self.data[idx][..., 1:3]
 
-        v0 = (v0 - v0.min()) / (v0.max() - v0.min()) # [0, 1]
+        # ICs and BCs
+        d0 = self.data[idx][..., 3][..., np.newaxis]
+        bc0 = self.data[idx][..., 4][..., np.newaxis]
+        tau = self.data[idx][..., 5][..., np.newaxis]
 
+        vt = (vt - vt.min()) / (vt.max() - vt.min()) # [0, 1]
+
+        dt_t = torch.from_numpy(dt.transpose(2, 0, 1)).float() # hwc to chw
+        vt_t = torch.from_numpy(vt.transpose(2, 0, 1)).float() # hwc to chw
+
+        # ICs and BCs
         d0_t = torch.from_numpy(d0.transpose(2, 0, 1)).float() # hwc to chw
-        v0_t = torch.from_numpy(v0.transpose(2, 0, 1)).float() # hwc to chw
+        bc0_t = torch.from_numpy(bc0.transpose(2, 0, 1)).float() # hwc to chw
         tau_t = torch.from_numpy(tau.transpose(2, 0, 1)).float() # hwc to chw
 
         #print(d0_t.size())
+        #print(bc0_t.size())
         #print(v0_t.size())
         #print(tau_t.size())
 
         if self.transform_ops is not None:
-            v0_t = self.transform_ops(v0_t)
+            dt_t = self.transform_ops(dt_t)
+            vt_t = self.transform_ops(vt_t)
 
-        return d0_t, v0_t, tau_t
+        return dt_t, vt_t, d0_t, bc0_t, tau_t # 6 channels
 
     def __len__(self):
         return len(self.data)
@@ -259,3 +283,85 @@ class MantaFlow2DTemporalDataset(Dataset):
     def __len__(self):
         assert self.densities.shape[0] == self.velocities.shape[0]
         return self.densities.shape[0]
+    
+
+    
+class MantaFlow2DSimXYStatesDataset(Dataset):
+    """Provides dt, vt, tau as a triplet at t-1, t and t+1, individually"""
+    def __init__(self, data_path, start_itr=1000, end_itr=2000, grid_width=64, grid_height=64, transform_ops=None):
+        self.transform_ops = transform_ops
+
+        self.data = []
+
+        # Note: Identical entries normalized by the TOTAL_SIMULATION_TIME
+        tau_range = np.arange(0, TOTAL_SIMULATION_TIME)
+        XX, _ = np.meshgrid(tau_range, tau_range, indexing="ij")
+        self.tau = np.stack([ np.tile(XX[t], reps=(TOTAL_SIMULATION_TIME, 1))[: grid_height, : grid_width, np.newaxis] for t in range(TOTAL_SIMULATION_TIME) ], axis=0)
+        self.tau = self.tau / (TOTAL_SIMULATION_TIME - 1) # [TOTAL_SIMULATION_TIME, 64, 64, 1]
+        print(f"Shape of tau: {self.tau.shape}")
+
+        for sim in range(start_itr, end_itr): 
+            if os.path.exists( "%s/simSimple_%04d" % (data_path, sim) ):
+
+                for t in range(0, TOTAL_SIMULATION_TIME):
+                    dt = load_sim_file(data_path, sim, 'density', t)
+                    vt = load_sim_file(data_path, sim, 'vel', t)
+                    xt = np.dstack([dt, vt, self.tau[t]])
+                    self.data.append(xt)
+
+        num_data = len(self.data)
+        NUM_SIMS = 1
+        assert num_data >= NUM_SIMS, f"Number of simulations should be at least {NUM_SIMS}"
+        #print(f'Loaded {num_data} data triplets') # [20, 100, 64, 64, 4]
+
+    def __getitem__(self, idx):
+        # Note: at time t
+        d0 = self.data[idx][..., :1]
+        v0 = self.data[idx][..., 1:3]
+        tau = self.data[idx][..., -1:]
+
+        v0 = (v0 - v0.min()) / (v0.max() - v0.min()) # [0, 1]
+
+        d0_t = torch.from_numpy(d0.transpose(2, 0, 1)).float() # hwc to chw
+        v0_t = torch.from_numpy(v0.transpose(2, 0, 1)).float() # hwc to chw
+        tau_t = torch.from_numpy(tau.transpose(2, 0, 1)).float() # hwc to chw
+
+        #print(d0_t.size())
+        #print(v0_t.size())
+        #print(tau_t.size())
+
+        if self.transform_ops is not None:
+            v0_t = self.transform_ops(v0_t)
+
+        # Note: at time t - 1
+        d0_prev = self.data[idx - 1][..., :1] if idx > 0 else self.data[idx][..., :1]
+        v0_prev = self.data[idx - 1][..., 1:3] if idx > 0 else self.data[idx][..., 1:3]
+        tau_prev = self.data[idx - 1][..., -1:] if idx > 0 else self.data[idx][..., -1:]
+
+        v0_prev = (v0_prev - v0_prev.min()) / (v0_prev.max() - v0_prev.min()) # [0, 1]
+
+        d0_prev_t = torch.from_numpy(d0_prev.transpose(2, 0, 1)).float() # hwc to chw
+        v0_prev_t = torch.from_numpy(v0_prev.transpose(2, 0, 1)).float() # hwc to chw
+        tau_prev_t = torch.from_numpy(tau_prev.transpose(2, 0, 1)).float() # hwc to chw
+
+        if self.transform_ops is not None:
+            v0_prev_t = self.transform_ops(v0_prev_t)
+
+        # Note: at time t + 1
+        d0_next = self.data[idx + 1][..., :1] if idx < TOTAL_SIMULATION_TIME - 1 else self.data[idx][..., :1]
+        v0_next = self.data[idx + 1][..., 1:3] if idx < TOTAL_SIMULATION_TIME - 1 else self.data[idx][..., 1:3]
+        tau_next = self.data[idx + 1][..., -1:] if idx < TOTAL_SIMULATION_TIME - 1 else self.data[idx][..., -1:]
+
+        v0_next = (v0_next - v0_next.min()) / (v0_next.max() - v0_next.min()) # [0, 1]
+
+        d0_next_t = torch.from_numpy(d0_next.transpose(2, 0, 1)).float() # hwc to chw
+        v0_next_t = torch.from_numpy(v0_next.transpose(2, 0, 1)).float() # hwc to chw
+        tau_next_t = torch.from_numpy(tau_next.transpose(2, 0, 1)).float() # hwc to chw
+
+        if self.transform_ops is not None:
+            v0_next_t = self.transform_ops(v0_next_t)
+
+        return d0_prev_t, v0_prev_t, tau_prev_t,   d0_t, v0_t, tau_t,   d0_next_t, v0_next_t, tau_next_t
+
+    def __len__(self):
+        return len(self.data)

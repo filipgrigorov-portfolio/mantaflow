@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 from networks import UNet, AttentionUNet
-from utils import GRID_SIZE, CHANNELS # rho, vx and vy
+from utils import GRID_SIZE, INPUT_CHANNELS # rho, vx and vy
 
 # Definitions
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -12,7 +12,7 @@ DIFFUSION_STEPS = 400
 MIN_BETA = 1e-4
 MAX_BETA = 2e-2
 
-INPUT_SHAPE = (CHANNELS, GRID_SIZE, GRID_SIZE) # rho (ICs), vx and vy
+INPUT_SHAPE = (INPUT_CHANNELS, GRID_SIZE, GRID_SIZE) # rho (ICs), vx and vy
 
 # Summary:
 # Note: forward process adds noise relative to x0 (original image) instead of adding noise gradually
