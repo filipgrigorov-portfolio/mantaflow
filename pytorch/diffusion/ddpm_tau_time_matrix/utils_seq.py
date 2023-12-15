@@ -111,7 +111,7 @@ def show_compound_images(images, title=""):
 def show_first_batch(loader):
     """Shows the images in the first batch of a DataLoader object"""
     for idx, batch in enumerate(loader):
-        if idx == 2:
+        if idx == 0:
             dt = batch[0]
             vt = batch[1]
             d0 = batch[2]

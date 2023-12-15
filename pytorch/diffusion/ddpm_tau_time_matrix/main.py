@@ -19,6 +19,8 @@ import torch.nn as nn
 
 import torch.optim as optim
 
+from model import DDPM, UNet, DEVICE, AttentionUNet, SelfAttentionUNet
+
 # Setting reproducibility
 SEED = 0
 random.seed(SEED)
@@ -121,9 +123,12 @@ def sample_sequence(ddpm, d0, bc0, tau, channels, height=GRID_SIZE, width=GRID_S
                     # Adding some more noise like in Langevin Dynamics fashion
                     x = x + sigma_t * z
 
+            # Note: Sampling inverse transforms
+            x = torch.clamp(x, -1, 1)
+            x = inverse_default_transform_ops()(x)
             # debug
-            plt.imshow(tau[i].cpu().numpy().transpose(1, 2, 0), vmin=0, vmax=1)
-            plt.savefig(f"tau_sample_{i+1}.jpg")
+            #plt.imshow(tau[i].cpu().numpy().transpose(1, 2, 0), vmin=0, vmax=1)
+            #plt.savefig(f"SEQ_TEST/tau_sample_{i+1}.jpg")
             # debug
 
             d = x[0, 0, :, :].cpu().numpy()
@@ -132,18 +137,16 @@ def sample_sequence(ddpm, d0, bc0, tau, channels, height=GRID_SIZE, width=GRID_S
             plt.imshow(d)
             plt.savefig(f"SEQ_TEST/density_{i + 1}.png")
             frames.append(x)
-    raise('debug') # debug
     return frames
 
 @torch.no_grad()
 def run_sequence_sampling(with_attention=False):
-    from model import DDPM, UNet, DEVICE, AttentionUNet
-
     # Originally used by the authors
     diffusion_steps = 400
     min_beta = 1e-4
     max_beta = 2e-2
-    ddpm = DDPM(AttentionUNet(output_channels=OUTPUT_CHANNELS, diffusion_steps=diffusion_steps), diffusion_steps=diffusion_steps, min_beta=min_beta, max_beta=max_beta, device=DEVICE) if with_attention \
+    ddpm = DDPM(SelfAttentionUNet(output_channels=OUTPUT_CHANNELS, diffusion_steps=diffusion_steps, time_emb_dim=TOTAL_SIMULATION_TIME), 
+                diffusion_steps=diffusion_steps, min_beta=min_beta, max_beta=max_beta, device=DEVICE) if with_attention \
         else DDPM(UNet(output_channels=OUTPUT_CHANNELS, diffusion_steps=diffusion_steps), diffusion_steps=diffusion_steps, min_beta=min_beta, max_beta=max_beta, device=DEVICE)
 
     print("Parameters: ", sum([p.numel() for p in ddpm.parameters()]))
@@ -391,7 +394,6 @@ def train_seq(display=True, continue_from_checkpoint=False, show_forward_process
     print('End of training')
 
 def train_triplet_d_v_tau(display=True, continue_from_checkpoint=False, show_forward_process=False, show_backward_process=False, with_attention=False):
-    from model import DDPM, UNet, DEVICE, AttentionUNet
     EPOCHS = 1000
     LR = 1e-4
     BATCH_SIZE = 8 # multiple of EPOCHS
@@ -400,7 +402,8 @@ def train_triplet_d_v_tau(display=True, continue_from_checkpoint=False, show_for
     diffusion_steps = 400
     min_beta = 1e-4
     max_beta = 2e-2
-    ddpm = DDPM(AttentionUNet(output_channels=OUTPUT_CHANNELS, diffusion_steps=diffusion_steps), diffusion_steps=diffusion_steps, min_beta=min_beta, max_beta=max_beta, device=DEVICE) if with_attention else \
+    ddpm = DDPM(SelfAttentionUNet(output_channels=OUTPUT_CHANNELS, diffusion_steps=diffusion_steps, time_emb_dim=TOTAL_SIMULATION_TIME), 
+                diffusion_steps=diffusion_steps, min_beta=min_beta, max_beta=max_beta, device=DEVICE) if with_attention else \
         DDPM(UNet(output_channels=OUTPUT_CHANNELS, diffusion_steps=diffusion_steps), diffusion_steps=diffusion_steps, min_beta=min_beta, max_beta=max_beta, device=DEVICE)
 
     sum([p.numel() for p in ddpm.parameters()])
@@ -408,7 +411,7 @@ def train_triplet_d_v_tau(display=True, continue_from_checkpoint=False, show_for
     # Note: data loading
 
     #loader = DataLoader(generate_dataset(INPUT_DATA_PATH), batch_size=BATCH_SIZE, shuffle=True, pin_memory=True)
-    dataset = MantaFlow2DSimTupleDataset(data_path=INPUT_DATA_PATH, start_itr=1000, end_itr=2050, grid_height=GRID_SIZE, grid_width=GRID_SIZE, transform_ops=default_transform_ops())
+    dataset = MantaFlow2DSimTupleDataset(data_path=INPUT_DATA_PATH, start_itr=1000, end_itr=2100, grid_height=GRID_SIZE, grid_width=GRID_SIZE, transform_ops=default_transform_ops())
     loader = DataLoader(dataset=dataset, batch_size=BATCH_SIZE, shuffle=True, pin_memory=True, drop_last=True)
 
     # Display at start of training (Optional)
@@ -440,7 +443,7 @@ def train_triplet_d_v_tau(display=True, continue_from_checkpoint=False, show_for
     for epoch in tqdm(range(EPOCHS), desc=f"Training progress", colour="#00ff00"):
 
         epoch_loss = 0.0
-        for _, batch in enumerate(tqdm(loader, leave=False, desc=f"Epoch {epoch + 1}/{EPOCHS}", colour="#005500"), start=0):
+        for _, batch in enumerate(tqdm(loader, leave=False, desc=f"Epoch {epoch + 1}/{EPOCHS}", colour="#005500")):
             # Input data
             dt = batch[0].to(DEVICE)
             vt = batch[1].to(DEVICE)
@@ -532,7 +535,7 @@ def show_data():
     dataset = MantaFlow2DSimTupleDataset(
         data_path=INPUT_DATA_PATH, 
         grid_height=GRID_SIZE, grid_width=GRID_SIZE, 
-        start_itr=1000, end_itr=1001, transform_ops=default_transform_ops())
+        start_itr=1000, end_itr=2100, transform_ops=default_transform_ops())
     loader = DataLoader(dataset=dataset, batch_size=8, shuffle=False, pin_memory=True)
     show_first_batch(loader=loader)
 
@@ -566,6 +569,6 @@ if __name__ == "__main__":
         pass
     elif args.sample_sequence:
         """Samples a sequence from ICs and BCs"""
-        run_sequence_sampling()
+        run_sequence_sampling(with_attention=args.with_attention)
     else:
         print('No action has been selected!')

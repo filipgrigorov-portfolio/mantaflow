@@ -180,7 +180,169 @@ class UNet(nn.Module):
             nn.SiLU(),
             nn.Linear(dim_out, dim_out)
         )
-    
+
+class SelfAttention(nn.Module):
+    def __init__(self, channels):
+        super(SelfAttention, self).__init__()
+
+        self.channels = channels
+        
+        self.mha = nn.MultiheadAttention(channels, 2, batch_first=True)
+        
+        self.ln = nn.LayerNorm([channels])
+        
+        self.ff_self = nn.Sequential(
+            nn.LayerNorm([channels]),
+            nn.Linear(channels, channels),
+            nn.GELU(),
+            nn.Linear(channels, channels),
+        )
+
+    def forward(self, x):
+        size = x.shape[-1]
+        x = x.view(-1, self.channels, size * size).swapaxes(1, 2)
+        
+        x_ln = self.ln(x)
+        
+        attention_value, _ = self.mha(x_ln, x_ln, x_ln)
+        
+        attention_value = attention_value + x
+        
+        attention_value = self.ff_self(attention_value) + attention_value
+
+        return attention_value.swapaxes(2, 1).view(-1, self.channels, size, size)
+
+
+class SelfAttentionUNet(nn.Module):
+    """ Using SelfAttention """
+    def __init__(self, output_channels, diffusion_steps, time_emb_dim):
+        super(SelfAttentionUNet, self).__init__()
+
+        # Sinusoidal embedding
+        self.time_embed = nn.Embedding(diffusion_steps, time_emb_dim)
+        self.time_embed.weight.data = sinusoidal_embedding(diffusion_steps, time_emb_dim)
+        self.time_embed.requires_grad_(False) # Time embedding is not learnt
+
+        # Encoder
+        self.b1 = nn.Sequential(
+            Block(INPUT_SHAPE, INPUT_SHAPE[0], 10),
+            Block((10, GRID_SIZE, GRID_SIZE), 10, 10),
+            Block((10, GRID_SIZE, GRID_SIZE), 10, 10)
+        )
+        self.down1 = nn.Conv2d(10, 10, 4, 2, 1)
+
+        self.b2 = nn.Sequential(
+            Block((10, GRID_SIZE // 2, GRID_SIZE // 2), 10, 20),
+            Block((20, GRID_SIZE // 2, GRID_SIZE // 2), 20, 20),
+            Block((20, GRID_SIZE // 2, GRID_SIZE // 2), 20, 20)
+        )
+        self.down2 = nn.Conv2d(20, 20, 4, 2, 1)
+
+        self.time_encoding1 = self._make_te(time_emb_dim, 20)
+        self.attention1 = SelfAttention(channels=20) # Attention ----------------------------------------
+
+        self.b3 = nn.Sequential(
+            Block((20, GRID_SIZE // 4, GRID_SIZE // 4), 20, 40),
+            Block((40, GRID_SIZE // 4, GRID_SIZE // 4), 40, 40),
+            Block((40, GRID_SIZE // 4, GRID_SIZE // 4), 40, 40)
+        )
+        self.down3 = nn.Sequential(
+            nn.Conv2d(in_channels=40, out_channels=40, kernel_size=2, stride=1, padding=1),
+            nn.SiLU(),
+            nn.Conv2d(in_channels=40, out_channels=40, kernel_size=4, stride=2, padding=1)
+        )
+
+        # Bottleneck
+        self.attention2 = SelfAttention(channels=40) # Attention ----------------------------------------
+        self.b_mid = nn.Sequential(
+            Block((40, GRID_SIZE // 8, GRID_SIZE // 8), 40, 20),
+            Block((20, GRID_SIZE // 8, GRID_SIZE // 8), 20, 20),
+            Block((20, GRID_SIZE // 8, GRID_SIZE // 8), 20, 40)
+        )
+
+        # Decoder
+        self.up1 = nn.Sequential(
+            nn.ConvTranspose2d(in_channels=40, out_channels=40, kernel_size=4, stride=2, padding=1),
+            nn.SiLU(),
+            nn.ConvTranspose2d(in_channels=40, out_channels=40, kernel_size=5, stride=1, padding=2)
+        )
+        self.b4 = nn.Sequential(
+            Block((80, GRID_SIZE // 4, GRID_SIZE // 4), 80, 40),
+            Block((40, GRID_SIZE // 4, GRID_SIZE // 4), 40, 20),
+            Block((20, GRID_SIZE // 4, GRID_SIZE // 4), 20, 20)
+        )
+
+        self.up2 = nn.ConvTranspose2d(in_channels=20, out_channels=20, kernel_size=4, stride=2, padding=1)
+        self.b5 = nn.Sequential(
+            Block((40, GRID_SIZE // 2, GRID_SIZE // 2), 40, 20),
+            Block((20, GRID_SIZE // 2, GRID_SIZE // 2), 20, 10),
+            Block((10, GRID_SIZE // 2, GRID_SIZE // 2), 10, 10)
+        )
+
+        self.up3 = nn.ConvTranspose2d(10, 10, 4, 2, 1)
+
+        self.time_encoding2 = self._make_te(dim_in=time_emb_dim, dim_out=20)
+        self.attention3 = SelfAttention(channels=20) # Attention ----------------------------------------
+        
+        self.b_out = nn.Sequential(
+            Block((20, GRID_SIZE, GRID_SIZE), 20, 10),
+            Block((10, GRID_SIZE, GRID_SIZE), 10, 10),
+            Block((10, GRID_SIZE, GRID_SIZE), 10, 10, normalize=False)
+        )
+
+        self.conv_out = nn.Conv2d(in_channels=10, out_channels=output_channels, kernel_size=3, stride=1, padding=1)
+
+
+    def forward(self, x, time_step):
+        time_embedding = self.time_embed(time_step)
+        n = len(x)
+
+
+
+        # Encoder
+        b1_output = self.b1(x)
+        b2_output = self.b2(self.down1(b1_output))
+        time_encoding1_output = self.time_encoding1(time_embedding).reshape(n, -1, 1, 1) # [16, 20, 1, 1]
+        down2_and_time_encoding_output = self.down2(b2_output) + time_encoding1_output
+        attention1_output = self.attention1(down2_and_time_encoding_output)
+        b3_output = self.b3(attention1_output)
+
+
+
+        # Bottleneck
+        down3_output = self.down3(b3_output)
+        attention2_output = self.attention2(down3_output)
+        b_mid_output = self.b_mid(attention2_output) # [16, 40, 8, 8]
+        out4 = torch.cat((b3_output, self.up1(b_mid_output)), dim=1)            # skip connection
+
+
+
+        # Decoder        
+        b4_output = self.b4(out4)
+        out5 = torch.cat((b2_output, self.up2(b4_output)), dim=1)                    # skip connection
+
+        b5_output = self.b5(out5)
+        out = torch.cat((b1_output, self.up3(b5_output)), dim=1)                     # skip connection
+     
+
+        time_encoding2_output = self.time_encoding2(time_embedding).reshape(n, -1, 1, 1)
+        out_and_time_encoding_output = out + time_encoding2_output
+        attention3_output = self.attention3(out_and_time_encoding_output)
+        out = self.b_out(attention3_output) # [16, 10, 64, 64]
+
+
+        return self.conv_out(out)    # (N, 1, 64, 64)
+
+
+    def _make_te(self, dim_in, dim_out):
+        """Temporal embedding with MLP"""
+        return nn.Sequential(
+            nn.Linear(dim_in, dim_out),
+            nn.SiLU(),
+            nn.Linear(dim_out, dim_out)
+        )
+
+
 # Note: Trying to approximate https://arxiv.org/pdf/2301.11661.pdf
 class AttentionUNet(nn.Module):
     def __init__(self, output_channels=6, diffusion_steps=1000, time_emb_dim=100):

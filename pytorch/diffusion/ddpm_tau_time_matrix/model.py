@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from networks import UNet, AttentionUNet
+from networks import UNet, AttentionUNet, SelfAttentionUNet
 from utils import GRID_SIZE, INPUT_CHANNELS # rho, vx and vy
 
 # Definitions

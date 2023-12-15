@@ -12,7 +12,7 @@ TOTAL_SIMULATION_TIME = 20 # length of sequences
 DEBUG = True
 
 def load_sim_file(data_path, sim, type_name, idx):
-    uniPath = "%s/simSimple_%04d/%s_%04d.uni" % (data_path, sim, type_name, idx)  # 100 files per sim
+    uniPath = "%s/simSimple_%04d/%s_%04d.uni" % (data_path, sim, type_name, idx)  # TOTAL_SIMULATION_TIME files per sim
     print(uniPath)
     header, content = uniio.readUni(uniPath) # returns [Z,Y,X,C] np array
     h = header['dimX']
@@ -123,7 +123,7 @@ class MantaFlow2DSimTupleDataset(Dataset):
         tau_range = np.arange(0, grid_height)
         XX, _ = np.meshgrid(tau_range, tau_range, indexing="ij")
         self.tau = np.stack([ np.tile(XX[t], reps=(grid_height, 1))[: grid_height, : grid_width, np.newaxis] for t in range(TOTAL_SIMULATION_TIME) ], axis=0)
-        print(self.tau[0].shape)
+        #print(self.tau[0].shape)
         self.tau = self.tau / (TOTAL_SIMULATION_TIME - 1) # [TOTAL_SIMULATION_TIME, 64, 64, 1]
         print(f"Shape of tau: {self.tau.shape}")
 
@@ -131,9 +131,11 @@ class MantaFlow2DSimTupleDataset(Dataset):
             if os.path.exists( "%s/simSimple_%04d" % (data_path, sim) ):
 
                 # ICs/BCs
+                print("Loading ICs and BCs")
                 d0 = load_sim_file(data_path, sim, 'density', 0)
-                bc0 = load_sim_file(data_path, sim, 'boundary', 0)
+                bc0 = load_sim_file(data_path, sim, 'boundary', 1)
 
+                print("Loading time-dependent data")
                 # Input data
                 for t in range(0, TOTAL_SIMULATION_TIME):
                     dt = load_sim_file(data_path, sim, 'density', t)
@@ -163,7 +165,24 @@ class MantaFlow2DSimTupleDataset(Dataset):
         bc0 = self.data[idx][..., 4][..., np.newaxis]
         tau = self.data[idx][..., 5][..., np.newaxis]
 
+        # Normalize the input data to [0, 1]
+        dt = (dt - dt.min()) / (dt.max() - dt.min()) # [0, 1]
         vt = (vt - vt.min()) / (vt.max() - vt.min()) # [0, 1]
+
+        # Normalize the BCs and ICs to [0, 1]
+        d0 = (d0 - d0.min()) / (d0.max() - d0.min()) # [0, 1]
+        bc0 = (bc0 - bc0.min()) / (bc0.max() - bc0.min() + 1e-15).astype(np.float32) # [0, 1]
+        #bc0[bc0 > 0.0] = 1.0
+
+        #print(bc0.mean())
+        #import matplotlib.pyplot as plt
+        #import imageio as io
+        #plt.imshow(bc0, cmap='gray')
+        #plt.savefig("TEST.png")
+        #io.imwrite("TEST.png", bc0)
+        #raise('dataset debug')
+        # Note: tau is already in [0, 1]
+        #tau = (tau - tau.min()) / (tau.max() - tau.min()) # [0, 1]
 
         dt_t = torch.from_numpy(dt.transpose(2, 0, 1)).float() # hwc to chw
         vt_t = torch.from_numpy(vt.transpose(2, 0, 1)).float() # hwc to chw
@@ -172,6 +191,7 @@ class MantaFlow2DSimTupleDataset(Dataset):
         d0_t = torch.from_numpy(d0.transpose(2, 0, 1)).float() # hwc to chw
         bc0_t = torch.from_numpy(bc0.transpose(2, 0, 1)).float() # hwc to chw
         tau_t = torch.from_numpy(tau.transpose(2, 0, 1)).float() # hwc to chw
+
 
         #print(d0_t.size())
         #print(bc0_t.size())

@@ -12,7 +12,7 @@ import copy
 
 # Definitions
 WITH_OBSTACLES = True # Experiment
-MAX_NUM_OBSTACLES = 9
+MAX_NUM_OBSTACLES = 5
 
 def run_simulation():
 	# Main params  ----------------------------------------------------------------------#
@@ -74,7 +74,7 @@ def run_simulation():
 	obstacles = []
 
 	noiseN = 12
-	nseeds = np.random.randint(10000,size=noiseN)
+	nseeds = np.random.randint(10000, size=noiseN)
 
 	cpos = vec3(0.5,0.3,0.5)
 
@@ -102,8 +102,9 @@ def run_simulation():
 		sources.append(sm.create(Sphere, center=gs * (cpos + coff), radius=gs.x * radius_rand, scale=upz))
 
 		# Init noise-modulated density inside shape
-		densityInflow( flags=flags, density=density, noise=noise[nI], shape=sources[nI], scale=1.0, sigma=1.0 )
-		print (nI, "centre", gs*(cpos+coff), "radius", gs.x*radius_rand, "other", upz ) 
+		SCALE = 3.0#0.1
+		densityInflow( flags=flags, density=density, noise=noise[nI], shape=sources[nI], scale=SCALE, sigma=1.0 )
+		print (nI, "centre", gs*(cpos+coff), "radius", gs.x * radius_rand, "other", upz ) 
 
 
 
@@ -112,7 +113,8 @@ def run_simulation():
 	v1pos = vec3(0.7 + 0.4 *(Vrandom[0] - 0.5) ) #range(0.5,0.9) 
 	v2pos = vec3(0.3 + 0.4 *(Vrandom[1] - 0.5) ) #range(0.1,0.5)
 	vtheta = Vrandom[2] * math.pi * 0.5
-	velInflow = 0.04 * vec3(math.sin(vtheta), math.cos(vtheta), 0)
+	AMPLITUDE = 3#0.04 # Note: A little aggressive for greater differences
+	velInflow = AMPLITUDE * vec3(math.sin(vtheta), math.cos(vtheta), 0)
 
 	# Obstacles
 	for idx in range(num_obstacles):
@@ -134,11 +136,12 @@ def run_simulation():
 	if(dim == 2):
 		v1pos.z = v2pos.z = 0.5
 		sourcV1 = sm.create(Sphere, center=gs*v1pos, radius=gs.x*0.1, scale=vec3(1))
-		sourcV2 = sm.create(Sphere, center=gs*v2pos, radius=gs.x*0.1, scale=vec3(1))
-		sourcV1.applyToGrid( grid=vel , value=(-velInflow*float(gs.x)) )
-		sourcV2.applyToGrid( grid=vel , value=( velInflow*float(gs.x)) )
+		#sourcV2 = sm.create(Sphere, center=gs*v2pos, radius=gs.x*0.1, scale=vec3(1))
+		sourcV1.applyToGrid( grid=vel , value=(-velInflow * float(gs.x)) )
+		#sourcV2.applyToGrid( grid=vel , value=( velInflow * float(gs.x)) )
 
 	# 3D
+	'''
 	elif(dim == 3):
 		VrandomMore = np.random.rand(3)
 		vtheta2 = VrandomMore[0] * math.pi * 0.5
@@ -153,6 +156,7 @@ def run_simulation():
 			sourcV2 = sm.create(Sphere, center=gs*v2pos, radius=gs.x*0.1, scale=vec3(1))
 			sourcV1.applyToGrid( grid=vel , value=(-velInflow*float(gs.x)) )
 			sourcV2.applyToGrid( grid=vel , value=( velInflow*float(gs.x)) )
+	'''
 
 	# Setup UI ---------------------------------------------------------------------#
 	if (showGui and GUI):
