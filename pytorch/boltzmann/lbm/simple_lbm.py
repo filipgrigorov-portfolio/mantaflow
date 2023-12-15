@@ -1,3 +1,4 @@
+import argparse
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -9,36 +10,73 @@ import torch.nn as nn
 import torch.optim as optim
 
 # Definitions
-EVAL = True
-IS_NN = True
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+# nchw
+def sample_batch(replay_buffer, batch_size):
+	#print("replay: ", len(replay_buffer)) # debug
+	idx = torch.randint(low=0, high=len(replay_buffer) - batch_size - 1, size=(1,))
+	seq = [ replay_buffer[idx + offset] for offset in range(0, batch_size) ]
+	stacked_data = torch.concat(seq, dim=0)
+	#print('stacked: ', stacked_data.size()) # debug
+	return stacked_data
+
+def sinusoidal_embedding(n, d):
+    """Returns the standard positional embedding, d is emb dimension and n is max sequence length"""
+    # https://stackoverflow.com/questions/46452020/sinusoidal-embedding-attention-is-all-you-need
+    embedding = torch.zeros(n, d)
+    wk = torch.tensor([1 / 10_000 ** (2 * j / d) for j in range(d)])
+    wk = wk.reshape((1, d))
+    t = torch.arange(n).reshape((n, 1))
+    embedding[:,::2] = torch.sin(t * wk[:,::2])     # 2i
+    embedding[:,1::2] = torch.cos(t * wk[:,::2])    # 2i + 1
+
+    return embedding
+
+def time_embed(dim_in, dim_out):
+	"""Temporal embedding with MLP"""
+	return nn.Sequential(
+		nn.Linear(dim_in, dim_out),
+		nn.SiLU(),
+		nn.Linear(dim_out, dim_out)
+	)
+
 class CollisionNN(nn.Module):
-	def __init__(self, input_size, chs_in, chs_out):
+	def __init__(self, input_size, chs_in, chs_out, total_sim_time):
 		super(CollisionNN, self).__init__()
 
-		self.input_size = input_size
+		self.input_size = input_size * chs_in
 		self.chs_in = chs_in
 		self.chs_out = chs_out
 
+		self.time_embedding = time_embed(dim_in=total_sim_time, dim_out=32)
+
 		self.model = nn.Sequential(
-            nn.Linear(in_features=input_size * chs_in, out_features=32),
+            nn.Linear(in_features=self.input_size, out_features=32),
             nn.LeakyReLU(),
-			nn.Linear(in_features=32, out_features=32),
-			nn.LeakyReLU(),
-            nn.Linear(in_features=32, out_features=input_size * chs_out),
         )
 
-		#torch.nn.init.xavier_uniform_(self.model[0].weight)
-		#torch.nn.init.xavier_uniform_(self.model[-1].weight)
+		self.head = nn.Sequential(
+			nn.Linear(in_features=32, out_features=64),
+			nn.Linear(in_features=64, out_features=32),
+			nn.SiLU(),
+			nn.Linear(in_features=32, out_features=32),
+			nn.SiLU(),
+            nn.Linear(in_features=32, out_features=input_size * chs_out),
+		)
 
-	def forward(self, x):
-		orig_shape = x.shape
-		x = x.view(-1, self.input_size * self.chs_in)
-		return self.model(x).view(-1, self.chs_out, *orig_shape[2:])
+	def forward(self, x, t):
+		n, c, h, w = x.shape
+		x = x.flatten()
+		t_emb = self.time_embedding(t).reshape(-1)
+		out = self.model(x)
+		out_stacked = out + t_emb
+		out = self.head(out_stacked)
+		out = out.view(-1, self.chs_out, h, w)
+		return out
 
 
-def main():
+def main(eval=False, is_nn=False):
 	""" Lattice Boltzmann Simulation """
 	
 	# Simulation parameters
@@ -46,8 +84,10 @@ def main():
 	Ny = 100    # resolution y-dir
 	rho0 = 100    # average density
 	tau = 0.6    # collision timescale
-	Nt = 4000   # number of timesteps (T)
+	Nt = 10000   # number of timesteps (T)
 	plotRealTime = True # switch on for plotting as the simulation goes along
+
+	replay_buffer = []
 	
 	# Lattice speeds / weights
 	NL = 9
@@ -75,11 +115,12 @@ def main():
 
 	# NN --------------------------------------------------------------------------
 	CHS = 3
-	collision_model = CollisionNN(Nx * Ny, CHS, NL).to(DEVICE)
+	BATCH_SIZE = 3
+	collision_model = CollisionNN(1 * Nx * Ny, CHS, NL, Nt).to(DEVICE)
 	mse = nn.MSELoss().to(DEVICE)
 	optimizer = optim.Adam(collision_model.parameters(), lr=1e-4)
 	mean_loss = 0.0
-	if EVAL:
+	if eval:
 		print('Loading pretrained model')
 		collision_model.load_state_dict(torch.load("checkpoint.pt"))
 
@@ -111,36 +152,36 @@ def main():
 		for i, cx, cy, w in zip(idxs, cxs, cys, weights):
 			Feq[:, :, i] = rho * w * ( 1 + 3 * (cx * ux + cy * uy)  + 9 * (cx * ux + cy * uy)**2 / 2 - 3 * (ux**2 + uy**2) / 2 )
 		
-		collision_term = None
+
 		# NN collision term (self-supervised)
 		rho_nn = torch.from_numpy(rho.copy()[np.newaxis, np.newaxis, :, :]).to(DEVICE).float()
 		ux_nn = torch.from_numpy(ux.copy()[np.newaxis, np.newaxis, :, :]).to(DEVICE).float()
 		uy_nn = torch.from_numpy(uy.copy()[np.newaxis, np.newaxis, :, :]).to(DEVICE).float()
 		x = torch.concat([rho_nn, ux_nn, uy_nn], dim=1) # Concatenate along the channels
-		if not EVAL:
-			collision_term_pred = collision_model(x)
-			#print(collision_term_pred.size())
-			#print(torch.from_numpy(collision_term.transpose(2, 0, 1)[np.newaxis, :, :, :]).to(DEVICE).float().size())
-			loss = mse(collision_term_pred, torch.from_numpy(collision_term.transpose(2, 0, 1)[np.newaxis, :, :, :]).to(DEVICE).float())
-			mean_loss += loss.item()
-			optimizer.zero_grad()
-			loss.backward()
-			optimizer.step()
-		else:
-			if IS_NN:
-				with torch.no_grad():
-					collision_term = collision_model(x).detach().cpu().numpy().squeeze(0).transpose(1, 2, 0)
-			else:
-				collision_term = -(1.0 / tau) * (F - Feq)
+		#replay_buffer.append(x)
+
+		t = torch.arange(0, Nt).float().to(DEVICE) / Nt
+
+		collision_term = -(1.0 / tau) * (F - Feq) if not eval else collision_model(x, t)[-1, ...].detach().cpu().numpy()[np.newaxis, ...].squeeze(0).transpose(1, 2, 0)
+		
+		#if len(replay_buffer) > BATCH_SIZE + 1 and not eval:
+		#batch_x = sample_batch(replay_buffer, BATCH_SIZE)
+		collision_term_pred = collision_model(x, t)
+		loss = mse(collision_term_pred, torch.from_numpy(collision_term.transpose(2, 0, 1)[np.newaxis, :, :, :]).to(DEVICE).float())
+
+		mean_loss += loss.item()
+		optimizer.zero_grad()
+		loss.backward()
+		optimizer.step()
 
 		F += collision_term # (This can be approximated with a NN)
 
-		if not EVAL and it % 10 == 9:
+		if not eval and it % 10 == 9:
 			print(f"Loss: {mean_loss / (it + 1)}")
 			print("Saving current checkpoint")
 			torch.save(collision_model.state_dict(), "checkpoint.pt")
 			print("Prediction: ", collision_term_pred.detach().cpu().numpy()[0].max())
-			print("Expecttion: ", collision_term.max())
+			print("Expectation: ", collision_term.max())
 		
 		# Apply boundary 
 		F[cylinder, :] = bndryF
@@ -176,4 +217,17 @@ def main():
 
 
 if __name__== "__main__":
-  main()
+	parser = argparse.ArgumentParser()
+	parser.add_argument('--train', action='store_true')
+	parser.add_argument('--eval', action='store_true')
+	parser.add_argument('--collision', action='store_true')
+
+	args = parser.parse_args()
+
+	if args.train:
+		print(f"Training session running")
+		main(eval=False)
+	elif args.eval:
+		print(f"Evaluation session running")
+		main(eval=True)
+	print("Done")
