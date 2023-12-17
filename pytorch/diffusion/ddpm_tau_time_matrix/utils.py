@@ -13,7 +13,7 @@ from torchvision import transforms as T
 #Definitions
 BATCH_SIZE = 8
 GRID_SIZE = 64
-INPUT_CHANNELS = 6
+INPUT_CHANNELS = 5
 
 OUTPUT_DATA_PATH = "results/"
 

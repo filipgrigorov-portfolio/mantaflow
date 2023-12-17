@@ -16,10 +16,10 @@ MAX_NUM_OBSTACLES = 5
 
 def run_simulation():
 	# Main params  ----------------------------------------------------------------------#
-	steps    = 20 # TOTAL_SIMULATION_TIME
+	steps    = 16 # TOTAL_SIMULATION_TIME
 	savedata = True # save data or not
 	simNo    = 1000  # start ID
-	basePath = "data_20s/"#"test_data/"
+	basePath = "data_16s/"
 	npSeedstr   = "-1"
 	showGui  = False  # show UI
 

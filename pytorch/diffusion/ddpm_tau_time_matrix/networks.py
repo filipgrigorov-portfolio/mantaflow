@@ -215,8 +215,13 @@ class SelfAttention(nn.Module):
 
 class SelfAttentionUNet(nn.Module):
     """ Using SelfAttention """
-    def __init__(self, output_channels, diffusion_steps, time_emb_dim):
+    def __init__(self, output_channels, diffusion_steps, time_emb_dim=None, tau_dim=None):
         super(SelfAttentionUNet, self).__init__()
+
+        # Positional encoding tau
+        self.tau_embed = nn.Embedding(tau_dim, time_emb_dim)
+        self.tau_embed.weight.data = sinusoidal_embedding(tau_dim, time_emb_dim)
+        self.tau_embed.requires_grad_(False)
 
         # Sinusoidal embedding
         self.time_embed = nn.Embedding(diffusion_steps, time_emb_dim)
@@ -293,17 +298,28 @@ class SelfAttentionUNet(nn.Module):
         self.conv_out = nn.Conv2d(in_channels=10, out_channels=output_channels, kernel_size=3, stride=1, padding=1)
 
 
-    def forward(self, x, time_step):
+    def forward(self, x, tau, time_step):
+        tau_embedding = self.tau_embed(tau)
+        tau_size = len(x)
+
         time_embedding = self.time_embed(time_step)
         n = len(x)
+
+        #print(tau_embedding.size())
+        #print(time_embedding.size())
+        #print(tau_size)
+        #print(n)
 
 
 
         # Encoder
         b1_output = self.b1(x)
         b2_output = self.b2(self.down1(b1_output))
+        tau_encoding1_output = self.time_encoding1(tau_embedding).reshape(tau_size, -1, 1, 1) # experiment 8, 20, 1, 1
         time_encoding1_output = self.time_encoding1(time_embedding).reshape(n, -1, 1, 1) # [16, 20, 1, 1]
-        down2_and_time_encoding_output = self.down2(b2_output) + time_encoding1_output
+        #print(tau_encoding1_output.size())
+        #print(time_encoding1_output.size())
+        down2_and_time_encoding_output = self.down2(b2_output) + time_encoding1_output + tau_encoding1_output # experiment
         attention1_output = self.attention1(down2_and_time_encoding_output)
         b3_output = self.b3(attention1_output)
 
@@ -325,8 +341,9 @@ class SelfAttentionUNet(nn.Module):
         out = torch.cat((b1_output, self.up3(b5_output)), dim=1)                     # skip connection
      
 
+        tau_encoding2_output = self.time_encoding2(tau_embedding).reshape(tau_size, -1, 1, 1) # experiment
         time_encoding2_output = self.time_encoding2(time_embedding).reshape(n, -1, 1, 1)
-        out_and_time_encoding_output = out + time_encoding2_output
+        out_and_time_encoding_output = out + time_encoding2_output + tau_encoding2_output # experiment
         attention3_output = self.attention3(out_and_time_encoding_output)
         out = self.b_out(attention3_output) # [16, 10, 64, 64]
 

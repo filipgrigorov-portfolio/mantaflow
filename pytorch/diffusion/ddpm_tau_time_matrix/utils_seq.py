@@ -262,8 +262,9 @@ def generate_new_images_seq(ddpm, d_init, bc_init, tau, output_channels, sim_tim
     for _, t in enumerate(list(range(ddpm.diffusion_steps))[::-1]):
         # Estimating noise to be removed
         time_tensor = (torch.ones(sim_time, 1) * t).to(device).long()
-        x_stacked = torch.concat([x, d_init, bc_init, tau], dim=1)
-        eta_theta = ddpm.backward(x_stacked, time_tensor)
+        x_stacked = torch.concat([x, d_init, bc_init], dim=1)
+        tau_tensor = (torch.ones(sim_time, 1) * tau.cpu().max()).to(device).long() # experiment
+        eta_theta = ddpm.backward(x_stacked, tau_tensor, time_tensor)
 
         alpha_t = ddpm.alphas[t]
         alpha_t_bar = ddpm.alpha_bars[t]

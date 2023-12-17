@@ -48,9 +48,9 @@ class DDPM(nn.Module):
         noisy_x = a_bar.sqrt().reshape(n, 1, 1, 1) * x0 + (1 - a_bar).sqrt().reshape(n, 1, 1, 1) * eta
         return noisy_x
     
-    def backward(self, x, t):
+    def backward(self, x, tau, t):
         """Run each image through the network for each timestep t in the vector t. The network returns its estimation of the noise that was added."""
         # p(xt-1|xt) ~ N(xt-1; mu_theta(xt, t), sigma_t**2.I)
-        return self.network(x, t)
+        return self.network(x, tau, t)
     
 

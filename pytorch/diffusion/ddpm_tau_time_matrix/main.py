@@ -103,8 +103,9 @@ def sample_sequence(ddpm, d0, bc0, tau, channels, height=GRID_SIZE, width=GRID_S
             for idx, t in enumerate(list(range(ddpm.diffusion_steps))[::-1]):
                 # Estimating noise to be removed
                 time_tensor = (torch.ones(BATCH_SIZE, 1) * t).to(device).long()
-                xt = torch.concat([x, d_init, bc_init, tau_t], dim=1)
-                eta_theta = ddpm.backward(xt, time_tensor)
+                tau_tensor = (torch.ones(BATCH_SIZE, 1) * tau.cpu().max()).to(device).long() # experiment
+                xt = torch.concat([x, d_init, bc_init, ], dim=1)
+                eta_theta = ddpm.backward(xt, tau_tensor, time_tensor)
 
                 alpha_t = ddpm.alphas[t]
                 alpha_t_bar = ddpm.alpha_bars[t]
@@ -145,7 +146,7 @@ def run_sequence_sampling(with_attention=False):
     diffusion_steps = 400
     min_beta = 1e-4
     max_beta = 2e-2
-    ddpm = DDPM(SelfAttentionUNet(output_channels=OUTPUT_CHANNELS, diffusion_steps=diffusion_steps, time_emb_dim=TOTAL_SIMULATION_TIME), 
+    ddpm = DDPM(SelfAttentionUNet(output_channels=OUTPUT_CHANNELS, diffusion_steps=diffusion_steps, time_emb_dim=TOTAL_SIMULATION_TIME, tau_dim=TOTAL_SIMULATION_TIME), 
                 diffusion_steps=diffusion_steps, min_beta=min_beta, max_beta=max_beta, device=DEVICE) if with_attention \
         else DDPM(UNet(output_channels=OUTPUT_CHANNELS, diffusion_steps=diffusion_steps), diffusion_steps=diffusion_steps, min_beta=min_beta, max_beta=max_beta, device=DEVICE)
 
@@ -402,7 +403,7 @@ def train_triplet_d_v_tau(display=True, continue_from_checkpoint=False, show_for
     diffusion_steps = 400
     min_beta = 1e-4
     max_beta = 2e-2
-    ddpm = DDPM(SelfAttentionUNet(output_channels=OUTPUT_CHANNELS, diffusion_steps=diffusion_steps, time_emb_dim=TOTAL_SIMULATION_TIME), 
+    ddpm = DDPM(SelfAttentionUNet(output_channels=OUTPUT_CHANNELS, diffusion_steps=diffusion_steps, time_emb_dim=TOTAL_SIMULATION_TIME, tau_dim=TOTAL_SIMULATION_TIME), 
                 diffusion_steps=diffusion_steps, min_beta=min_beta, max_beta=max_beta, device=DEVICE) if with_attention else \
         DDPM(UNet(output_channels=OUTPUT_CHANNELS, diffusion_steps=diffusion_steps), diffusion_steps=diffusion_steps, min_beta=min_beta, max_beta=max_beta, device=DEVICE)
 
@@ -453,7 +454,8 @@ def train_triplet_d_v_tau(display=True, continue_from_checkpoint=False, show_for
             bc_init = batch[3].to(DEVICE)
 
             # Time conditioning
-            tau = batch[4].to(DEVICE)
+            #tau = batch[4].to(DEVICE)
+
 
             # Picking some noise for each of the images in the batch, a timestep and the respective alpha_bars
             flow_input_data = torch.concat([dt, vt], dim=1)
@@ -465,8 +467,11 @@ def train_triplet_d_v_tau(display=True, continue_from_checkpoint=False, show_for
             noisy_imgs = ddpm(flow_input_data, t, eta)
 
             # Getting model estimation of noise based on the images and the time-step (BACKWARD)
-            x0 = torch.concat([noisy_imgs, d_init, bc_init, tau], dim=1) # Note: [batch, OUTPUT_CHANNELS, 64, 64]
-            eta_pred = ddpm.backward(x0, t.reshape(n, -1))               # Note: Only learn on the noise of the velocity field
+            x0 = torch.concat([noisy_imgs, d_init, bc_init], dim=1) # Note: [batch, OUTPUT_CHANNELS, 64, 64]
+            # TODO: time embed tau
+            tau = torch.randint(0, TOTAL_SIMULATION_TIME, (n, )).to(DEVICE) # experiment
+
+            eta_pred = ddpm.backward(x0, tau.reshape(n, -1), t.reshape(n, -1))               # Note: Only learn on the noise of the velocity field
 
             # Optimizing the MSE between the noise plugged and the predicted noise
             loss = mse(eta_pred, eta)
