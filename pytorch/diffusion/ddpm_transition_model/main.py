@@ -1,6 +1,7 @@
 # Python
 import random
 import imageio as io
+import matplotlib.pyplot as plt
 import numpy as np
 np.set_printoptions(suppress=True)
 
@@ -14,6 +15,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 from model import DDPM, DEVICE, SelfAttentionUNet
+from networks import UNetTransition
 
 # Setting reproducibility
 SEED = 0
@@ -22,7 +24,7 @@ np.random.seed(SEED)
 torch.manual_seed(SEED)
 
 OUTPUT_CHANNELS = 3
-AT_EVERY = 10
+AT_EVERY = 30
 
 # Definitions
 INPUT_DATA_PATH = "data_16s/"
@@ -34,6 +36,18 @@ from dataset import MantaFlow2DSimStatesDataset
 
 
 
+from torch.utils.tensorboard import SummaryWriter
+writer = SummaryWriter()
+
+
+
+def save_tensor(x, title, idx, vmin=-1, vmax=1):
+    x_display = torch.clamp(x, vmin, vmax)
+    x_display = inverse_default_transform_ops()(x_display)
+    x_display = x_display[0, 0, :, :].cpu().numpy()
+    io.imwrite(f"SEQ_TEST/{title}_{idx}.png", x_display)
+    plt.imshow(x_display)
+    plt.savefig(f"SEQ_TEST/{title}_{idx}_plt.jpg")
 
 @torch.no_grad()
 def sample_sequence():
@@ -54,32 +68,34 @@ def sample_sequence():
     loader = DataLoader(dataset=dataset, batch_size=1, shuffle=False, pin_memory=True)
 
     dt_prev, vt_prev, d0, v0, bc0, dt_next, vt_next, tau = next(iter(loader))
+    dt_prev = dt_prev.to(DEVICE)
+    vt_prev = vt_prev.to(DEVICE)
     d0 = d0.to(DEVICE)
     v0 = v0.to(DEVICE)
     bc0 = bc0.to(DEVICE)
-    tau = tau.to(DEVICE)
+    tau = tau.to(DEVICE).long()
+
+    save_tensor(dt_prev, 'density', 1)
 
     for time_step in range(1, TOTAL_SIMULATION_TIME):
         # Starting from random noise
         time_idx = time_step + 1
         print(f'Processing frame {time_idx}')
         
-        x = sample(ddpm, dt_prev=d0, vt_prev=v0, bc_init=bc0, tau=tau, output_channels=OUTPUT_CHANNELS, n=1)
-        d0 = x[:, :1, ...].clone()
-        v0 = x[:, 1:, ...].clone()
+        x = sample(ddpm, dt_prev=dt_prev, vt_prev=vt_prev, bc_init=bc0, tau=tau, output_channels=OUTPUT_CHANNELS, n=1)
+        dt_prev = x[:, :1, ...].clone()
+        vt_prev = x[:, 1:, ...].clone()
 
-        x_display = torch.clamp(x, -1, 1)
-        x_display = inverse_default_transform_ops()(x)
+        save_tensor(dt_prev, 'density', time_idx)
 
-        sampled_rho = x_display[0, 0, :, :].cpu().numpy()
-        io.imwrite(f"SEQ_TEST/density_{time_idx}.png", sampled_rho)
+
 
     print('End')
 
 
 
 def train(display=True, continue_from_checkpoint=False, show_forward_process=False):
-    EPOCHS = 1000
+    EPOCHS = 200
     LR = 1e-4
     BATCH_SIZE = 8
 
@@ -89,6 +105,7 @@ def train(display=True, continue_from_checkpoint=False, show_forward_process=Fal
     max_beta = 2e-2
     ddpm = DDPM(SelfAttentionUNet(output_channels=OUTPUT_CHANNELS, diffusion_steps=diffusion_steps, tau_dim=TOTAL_SIMULATION_TIME), 
                 diffusion_steps=diffusion_steps, min_beta=min_beta, max_beta=max_beta, device=DEVICE)
+    transition = UNetTransition(output_channels=OUTPUT_CHANNELS).to(DEVICE)
 
     sum([p.numel() for p in ddpm.parameters()])
 
@@ -117,10 +134,13 @@ def train(display=True, continue_from_checkpoint=False, show_forward_process=Fal
             # Input data
             dt_prev = batch[0].to(DEVICE)
             vt_prev = batch[1].to(DEVICE)
+
             dt = batch[2].to(DEVICE)
             vt = batch[3].to(DEVICE)
+            
             dt_next = batch[5].to(DEVICE)
             vt_next = batch[6].to(DEVICE)
+            
             tau = batch[7].to(DEVICE).long()
             
             # ICs/BCs conditioning
@@ -128,20 +148,22 @@ def train(display=True, continue_from_checkpoint=False, show_forward_process=Fal
 
 
             # Picking some noise for each of the images in the batch, a timestep and the respective alpha_bars
-            # Assuming time step (h) is 1
-            density_flow = (dt_next - dt_prev) / 2 # <=> (dt - dt_prev)
-            vel_flow = (vt_next - vt_prev) / 2 # <=> (vt - vt_prev)
-            flow_input_data = torch.concat([density_flow, vel_flow], dim=1)
-            n = len(flow_input_data)
-
-            eta = torch.randn_like(flow_input_data).to(DEVICE) # eta ~N(0, 1)
+            current_input_data = torch.concat([dt, vt], dim=1)
+            n = len(current_input_data)
+            current_eta = torch.randn_like(current_input_data).to(DEVICE) # eta ~N(0, 1)
             # Note: Randomly generated points in time for the rollout of the diffusion steps
             t = torch.randint(0, diffusion_steps, (n,)).to(DEVICE) # t ~N(0, T) - [BATCH_SIZE, ]
 
 
 
-            # (FORWARD)
-            noisy_imgs = ddpm(flow_input_data, t, eta)
+            # (FORWARD) -> only training
+            # [n, c, h, w]
+            current_state_noisy = ddpm(current_input_data, t, current_eta)
+
+
+            next_input_data = torch.concat([dt_next, vt_next], dim=1)
+            next_eta = torch.randn_like(next_input_data).to(DEVICE) # eta ~N(0, 1)
+            next_eta_gt = ddpm(next_input_data, t, next_eta)
 
 
 
@@ -151,20 +173,25 @@ def train(display=True, continue_from_checkpoint=False, show_forward_process=Fal
             # print(dt_prev.size())
             # print(vt_prev.size())
             # print(bc0.size())
-            noisy_x0 = torch.concat([noisy_imgs, dt_prev, vt_prev, bc0], dim=1)
-            eta_pred = ddpm.backward(noisy_x0, t.reshape(n, -1), tau.reshape(n, -1))
+            noisy_current_x0 = torch.concat([current_state_noisy, dt_prev, vt_prev, bc0], dim=1)
+            eta_pred = ddpm.backward(noisy_current_x0, t.reshape(n, -1), tau.reshape(n, -1)) # [N, 3, 64, 64]
+
+
+            # Note: Just for training to regularize the loss
+            next_eta_pred = transition(current_state_noisy)
 
 
 
             # Optimizing the MSE between the noise plugged and the predicted noise
-            loss = mse(eta_pred, eta) #+ KL(P||Q) -> nn.KLDivLoss(pred, gt)
+            loss = 0.5 * mse(eta_pred, current_eta) + 0.5 * mse(next_eta_pred, next_eta_gt)
+
 
 
             optimizer.zero_grad()
             loss.backward()            
             optimizer.step()
 
-            epoch_loss += loss.item() * len(noisy_x0) / len(loader.dataset)
+            epoch_loss += loss.item() * len(noisy_current_x0) / len(loader.dataset)
 
 
 
@@ -178,12 +205,18 @@ def train(display=True, continue_from_checkpoint=False, show_forward_process=Fal
         log_string = f"\nLoss at epoch {epoch + 1}: {epoch_loss:.3f}"
 
 
+        writer.add_scalar("Loss/train", epoch_loss, epoch)
+
+
         # Storing the model
         if best_loss > epoch_loss:
             best_loss = epoch_loss
             torch.save(ddpm.state_dict(), STORE_PATH_WEIGHTS)
             log_string += " --> Best model ever (stored)"
         print(log_string)
+
+    writer.flush()
+    writer.close()
 
     print('End of training')
 

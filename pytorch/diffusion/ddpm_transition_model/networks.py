@@ -8,6 +8,7 @@ VELOCITY_FIELD_SHAPE = (2, GRID_SIZE, GRID_SIZE) # vx and vy -> (2, h, w)
 DENSITY_SHAPE = (1, GRID_SIZE, GRID_SIZE)   # rho -> (1, h, w)
 INPUT_SHAPE = (INPUT_CHANNELS, GRID_SIZE, GRID_SIZE) # rho (ICs), vx and vy
 
+
 # Network utils
 def sinusoidal_embedding(n, d):
     """Returns the standard positional embedding, d is emb dimension and n is max sequence length"""
@@ -101,6 +102,63 @@ class SelfAttention(nn.Module):
 
         return attention_value.swapaxes(2, 1).view(-1, self.channels, size, size)
 
+class STAtt(nn.Module):
+    """ Traditional space-time attention mechanism """
+    def __init__(self, input_dim):
+        super(STAtt, self).__init__()
+
+        self.input_dim = input_dim
+        self.query = nn.Linear(input_dim, input_dim)
+        self.key = nn.Linear(input_dim, input_dim)
+        self.value = nn.Linear(input_dim, input_dim)
+        self.softmax = nn.Softmax(dim=2)
+        
+    def forward(self, x):
+        queries = self.query(x)
+        keys = self.key(x)
+        values = self.value(x)
+        # Note: softmax(QK.T / sqrt(d))
+        scores = torch.bmm(queries, keys.transpose(1, 2)) / (self.input_dim ** 0.5)
+        attention = self.softmax(scores)
+        weighted = torch.bmm(attention, values)
+        return weighted
+    
+class STEncoder(nn.Module):
+    def __init__(self, input_channels, out_features):
+        super(STEncoder, self).__init__()
+
+        self.b1 = nn.Sequential(
+            Block((input_channels, GRID_SIZE, GRID_SIZE), input_channels, 10),
+            Block((10, GRID_SIZE, GRID_SIZE), 10, 10),
+            Block((10, GRID_SIZE, GRID_SIZE), 10, 10)
+        )
+
+        self.down1 = nn.Conv2d(in_channels=10, out_channels=10, kernel_size=4, stride=2, padding=1)
+
+        down_size = GRID_SIZE // 2
+        self.b2 = nn.Sequential(
+            Block((10, down_size, down_size), 10, 20),
+            Block((20, down_size, down_size), 20, 20),
+            Block((20, down_size, down_size), 20, 20)
+        )
+
+        self.down2 = nn.Conv2d(20, 5, 4, 2, 1)
+
+        self.maxpool = nn.MaxPool2d(2, 2)
+
+        self.fc = nn.Linear(in_features=5 * (GRID_SIZE // 8)**2, out_features=out_features, bias=True)
+
+    def forward(self, x):
+        out = self.b1(x)
+        out = self.down1(out)
+        out = self.b2(out)
+        out = self.down2(out)
+        out = self.maxpool(out)
+        out = out.view(out.size(0), -1)
+        out = self.fc(out)
+        return out.view(out.size(0), 1, -1)
+
+
 
 class SelfAttentionUNet(nn.Module):
     """ Using SelfAttention """
@@ -117,6 +175,13 @@ class SelfAttentionUNet(nn.Module):
         self.tau_embed = nn.Embedding(tau_dim, time_emb_dim)
         self.tau_embed.weight.data = sinusoidal_embedding(tau_dim, time_emb_dim)
         self.tau_embed.requires_grad_(False) # Time embedding is not learnt
+
+
+        # debug
+        # Note: feature extract to time_emb_dim size
+        self.st_encoder_den = STEncoder(input_channels=2*1, out_features=time_emb_dim)
+        self.st_encoder_vel = STEncoder(input_channels=2*2, out_features=time_emb_dim)
+        self.st_attention = STAtt(input_dim=time_emb_dim)
 
 
         # Encoder
@@ -198,10 +263,29 @@ class SelfAttentionUNet(nn.Module):
         tau_embedding = self.tau_embed(tau_step)
         tau_encoding1_output = self.time_encoding1(tau_embedding).reshape(n, -1, 1, 1) # [16, 20, 1, 1]
 
+        # [n, 7, h, w]
+        dt = x[:, :1, ...]
+        vt = x[:, 1:3, ...]
+        dt_prev = x[:, 3:4, ...]
+        vt_prev = x[:, 4:-1, ...]
+        density_stacked = torch.concat([dt_prev, dt], dim=1)
+        velocity_stacked = torch.concat([vt_prev, vt], dim=1)
+        
+        den_temp_encoded = self.st_encoder_den(density_stacked)
+        vel_temp_encoded = self.st_encoder_vel(velocity_stacked)
+
+        den_temp_attention = self.st_attention(den_temp_encoded)
+        vel_temp_attention = self.st_attention(vel_temp_encoded)
+
+        den_temp_embedding = self.time_encoding1(den_temp_attention).reshape(n, -1, 1, 1)
+        vel_temp_embedding = self.time_encoding1(vel_temp_attention).reshape(n, -1, 1, 1)
+
+        temporal_embedding = den_temp_embedding + vel_temp_embedding
+
 
         # Encoder
         b1_output = self.b1(x)
-        b2_output = self.b2(self.down1(b1_output)) + tau_encoding1_output
+        b2_output = self.b2(self.down1(b1_output)) + tau_encoding1_output + temporal_embedding
         
         time_encoding1_output = self.time_encoding1(time_embedding).reshape(n, -1, 1, 1) # [16, 20, 1, 1]
         down2_and_time_encoding_output = self.down2(b2_output) + time_encoding1_output
@@ -244,3 +328,93 @@ class SelfAttentionUNet(nn.Module):
             nn.SiLU(),
             nn.Linear(dim_out, dim_out)
         )
+    
+
+class UNetTransition(nn.Module):
+    def __init__(self, output_channels):
+        super(UNetTransition, self).__init__()
+
+        # Encoder
+        input_shape = (output_channels, GRID_SIZE, GRID_SIZE)
+        self.b1 = nn.Sequential(
+            Block(input_shape, output_channels, 10),
+            Block((10, GRID_SIZE, GRID_SIZE), 10, 10),
+            Block((10, GRID_SIZE, GRID_SIZE), 10, 10)
+        )
+        self.down1 = nn.Conv2d(10, 10, 4, 2, 1)
+
+        self.b2 = nn.Sequential(
+            Block((10, GRID_SIZE // 2, GRID_SIZE // 2), 10, 20),
+            Block((20, GRID_SIZE // 2, GRID_SIZE // 2), 20, 20),
+            Block((20, GRID_SIZE // 2, GRID_SIZE // 2), 20, 20)
+        )
+        self.down2 = nn.Conv2d(20, 20, 4, 2, 1)
+
+        self.b3 = nn.Sequential(
+            Block((20, GRID_SIZE // 4, GRID_SIZE // 4), 20, 40),
+            Block((40, GRID_SIZE // 4, GRID_SIZE // 4), 40, 40),
+            Block((40, GRID_SIZE // 4, GRID_SIZE // 4), 40, 40)
+        )
+        self.down3 = nn.Sequential(
+            nn.Conv2d(in_channels=40, out_channels=40, kernel_size=2, stride=1, padding=1),
+            nn.SiLU(),
+            nn.Conv2d(in_channels=40, out_channels=40, kernel_size=4, stride=2, padding=1)
+        )
+
+        # Bottleneck
+        self.b_mid = nn.Sequential(
+            Block((40, GRID_SIZE // 8, GRID_SIZE // 8), 40, 20),
+            Block((20, GRID_SIZE // 8, GRID_SIZE // 8), 20, 20),
+            Block((20, GRID_SIZE // 8, GRID_SIZE // 8), 20, 40)
+        )
+
+        # Decoder
+        self.up1 = nn.Sequential(
+            nn.ConvTranspose2d(in_channels=40, out_channels=40, kernel_size=4, stride=2, padding=1),
+            nn.SiLU(),
+            nn.ConvTranspose2d(in_channels=40, out_channels=40, kernel_size=5, stride=1, padding=2)
+        )
+
+        self.b4 = nn.Sequential(
+            Block((80, GRID_SIZE // 4, GRID_SIZE // 4), 80, 40),
+            Block((40, GRID_SIZE // 4, GRID_SIZE // 4), 40, 20),
+            Block((20, GRID_SIZE // 4, GRID_SIZE // 4), 20, 20)
+        )
+
+        self.up2 = nn.ConvTranspose2d(in_channels=20, out_channels=20, kernel_size=4, stride=2, padding=1)
+        self.b5 = nn.Sequential(
+            Block((40, GRID_SIZE // 2, GRID_SIZE // 2), 40, 20),
+            Block((20, GRID_SIZE // 2, GRID_SIZE // 2), 20, 10),
+            Block((10, GRID_SIZE // 2, GRID_SIZE // 2), 10, 10)
+        )
+
+        self.up3 = nn.ConvTranspose2d(10, 10, 4, 2, 1)
+        self.b_out = nn.Sequential(
+            Block((20, GRID_SIZE, GRID_SIZE), 20, 10),
+            Block((10, GRID_SIZE, GRID_SIZE), 10, 10),
+            Block((10, GRID_SIZE, GRID_SIZE), 10, 10, normalize=False)
+        )
+
+        self.conv_out = nn.Conv2d(in_channels=10, out_channels=output_channels, kernel_size=3, stride=1, padding=1)
+
+    def forward(self, x):
+        # Encoder
+        out1 = self.b1(x)
+        out2 = self.b2(self.down1(out1))
+        out3 = self.b3(self.down2(out2))
+
+        out_mid = self.b_mid(self.down3(out3))
+
+        # Decoder
+        out4 = torch.cat((out3, self.up1(out_mid)), dim=1)
+        out4 = self.b4(out4)
+
+        out5 = torch.cat((out2, self.up2(out4)), dim=1)
+        out5 = self.b5(out5)
+
+        out = torch.cat((out1, self.up3(out5)), dim=1)
+        out = self.b_out(out)
+
+        out = self.conv_out(out)    # (N, output_channels, 64, 64)
+
+        return out

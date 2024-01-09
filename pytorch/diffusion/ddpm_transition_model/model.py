@@ -34,7 +34,7 @@ class DDPM(nn.Module):
         self.alpha_bars = torch.cumprod(self.alphas, dim=0).to(device)
 
     def forward(self, x0, t, eta=None):
-        """Forward process to introduce noise"""
+        """Forward process to introduce noise at different t out of T (diffusion steps)"""
         n, c, h, w = x0.shape
         a_bar = self.alpha_bars[t]
         

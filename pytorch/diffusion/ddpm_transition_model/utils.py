@@ -229,6 +229,7 @@ def show_compound_images(images, title=""):
     fig.suptitle(title, fontsize=30)
     plt.savefig(os.path.join(OUTPUT_DATA_PATH, title + "_vel_y.jpg"))
 
+# TODO: DDIM is a faster sampling strategy
 @torch.no_grad()
 def sample(ddpm, dt_prev, vt_prev, bc_init, tau, output_channels, n, device=None, grid_size=GRID_SIZE):
     """Given a DDPM model, a number of samples to be generated and a device, returns some newly generated samples"""
@@ -237,9 +238,6 @@ def sample(ddpm, dt_prev, vt_prev, bc_init, tau, output_channels, n, device=None
 
     # Starting from random noise
     x = torch.randn(n, output_channels, grid_size, grid_size).to(device)
-
-    rho = torch.zeros_like(x[:, :1, :, :])
-    vel = torch.zeros_like(x[:, 1:, :, :])
 
     # From T to 0, denoise
     for _, t in enumerate(list(range(ddpm.diffusion_steps))[::-1]):
@@ -251,7 +249,7 @@ def sample(ddpm, dt_prev, vt_prev, bc_init, tau, output_channels, n, device=None
         alpha_t = ddpm.alphas[t]
         alpha_t_bar = ddpm.alpha_bars[t]
 
-        # Partially denoising the image
+        # Partially denoising the image (Can I incorporate physics in here???)
         x = (1 / alpha_t.sqrt()) * (x - (1 - alpha_t) / (1 - alpha_t_bar).sqrt() * eta_theta)
 
         if t > 0:
@@ -264,11 +262,8 @@ def sample(ddpm, dt_prev, vt_prev, bc_init, tau, output_channels, n, device=None
             # Adding some more noise like in Langevin Dynamics fashion
             x = x + sigma_t * z
 
-    # Note: explicit Euler (forward Euler)
-    drho = x[:, :1, :, :]
-    dvel = x[:, 1:, :, :]
-    rho = dt_prev + drho
-    vel = vt_prev + dvel
+    rho = x[:, :1, :, :].clone()
+    vel = x[:, 1:, :, :].clone()
 
     return torch.concat([rho, vel], dim=1)
 
